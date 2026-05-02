@@ -10,18 +10,20 @@ function formatTime(iso) {
 }
 
 export default function ChatRoom({ room, token, userId, username, onBack }) {
-  const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState("");
-  const [status, setStatus] = useState("Setting up encryption...");
-  const [ready, setReady] = useState(false);
-  const [replyTo, setReplyTo] = useState(null);
-  const bottomRef = useRef(null);
-  const myKeys = useRef(null);
-  const sharedKeys = useRef({});
-  const usernameMap = useRef({});
-  const touchStart = useRef(null);
+  const [messages, setMessages]     = useState([]);
+  const [input, setInput]           = useState("");
+  const [status, setStatus]         = useState("Setting up encryption...");
+  const [ready, setReady]           = useState(false);
+  const [replyTo, setReplyTo]       = useState(null);
+  const [typingUser, setTypingUser] = useState(null);
+  const bottomRef    = useRef(null);
+  const myKeys       = useRef(null);
+  const sharedKeys   = useRef({});
+  const usernameMap  = useRef({});
+  const touchStart   = useRef(null);
   const pollInterval = useRef(null);
-  const sentIds = useRef(new Set()); // track optimistic messages to skip echo
+  const typingTimer  = useRef(null);
+  const sentMsgIds   = useRef(new Set());
 
   async function refreshSharedKeys() {
     if (!myKeys.current) return 0;
@@ -32,10 +34,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
       console.error("getRoomKeys failed:", e);
       return 0;
     }
-    if (!Array.isArray(keys)) {
-      console.error("keys is not an array:", keys);
-      return 0;
-    }
+    if (!Array.isArray(keys)) return 0;
     for (const entry of keys) {
       usernameMap.current[entry.user_id] = entry.username;
       if (Number(entry.user_id) === Number(userId)) continue;
@@ -44,7 +43,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
         const theirPub = await importPublicKey(entry.public_key);
         sharedKeys.current[entry.user_id] = await deriveSharedKey(myKeys.current.privateKey, theirPub);
       } catch (e) {
-        console.error("key derivation failed for", entry.user_id, e);
+        console.error("key derivation failed:", e);
       }
     }
     return Object.keys(sharedKeys.current).length;
@@ -53,9 +52,8 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
   async function tryDecrypt(recipients, senderId) {
     if (!recipients) return "[no content]";
     if (recipients.solo) {
-      try {
-        return decodeURIComponent(escape(atob(recipients.solo.ciphertext)));
-      } catch { return "[solo decrypt failed]"; }
+      try { return decodeURIComponent(escape(atob(recipients.solo.ciphertext))); }
+      catch { return "[solo decrypt failed]"; }
     }
     const mySlice = recipients[String(userId)];
     if (!mySlice) return "[message sent before you joined]";
@@ -78,7 +76,6 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     try {
       const msgs = await getMessages(token, room.id);
       if (!Array.isArray(msgs)) return;
-      // Reverse first so oldest is first, then decode
       const reversed = [...msgs].reverse();
       const decoded = await Promise.all(
         reversed.map(async (msg) => ({
@@ -129,16 +126,28 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
   }, [room.id]);
 
   const handleIncoming = useCallback(async (msg) => {
-    // Skip echo of our own messages — we already added optimistic bubble
-    if (Number(msg.sender_id) === Number(userId)) {
-      // Update the optimistic bubble with the real server ID
-      setMessages(prev => prev.map(m =>
-        m.id === null && m._plaintext && sentIds.current.has(m._plaintext)
-          ? { ...m, id: msg.id }
-          : m
-      ));
+    // Typing indicator
+    if (msg.type === "typing") {
+      setTypingUser(msg.username);
+      if (typingTimer.current) clearTimeout(typingTimer.current);
+      typingTimer.current = setTimeout(() => setTypingUser(null), 3000);
       return;
     }
+
+    // Skip echo of our own messages — we track by DB id
+    if (Number(msg.sender_id) === Number(userId)) {
+      // Update optimistic bubble with real DB id
+      setMessages(prev => {
+        const idx = prev.findIndex(m => m.id === null && Number(m.sender_id) === Number(userId) && !sentMsgIds.current.has(m._temp_id));
+        if (idx === -1) return prev;
+        const next = [...prev];
+        sentMsgIds.current.add(next[idx]._temp_id);
+        next[idx] = { ...next[idx], id: msg.id };
+        return next;
+      });
+      return;
+    }
+
     await refreshSharedKeys();
     const text = await tryDecrypt(msg.recipients, msg.sender_id);
     setMessages(prev => [...prev, {
@@ -148,11 +157,16 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     }]);
   }, [userId]);
 
-  const { send } = useWebSocket(room.id, token, handleIncoming);
+  const { send, sendTyping } = useWebSocket(room.id, token, handleIncoming);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, typingUser]);
+
+  function handleInputChange(e) {
+    setInput(e.target.value);
+    sendTyping(username);
+  }
 
   async function handleSend(e) {
     e.preventDefault();
@@ -163,19 +177,17 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     const replyId = replyTo ? replyTo.id : null;
     setReplyTo(null);
 
-    // Track this text so incoming echo can be skipped
-    sentIds.current.add(text);
-    setTimeout(() => sentIds.current.delete(text), 10000);
+    const tempId = Date.now() + Math.random();
 
     if (peers.length === 0) {
       const ciphertext = btoa(unescape(encodeURIComponent(text)));
-      send({ reply_to_id: replyId, recipients: { solo: { ciphertext, iv: "none" } } });
       setMessages(prev => [...prev, {
-        id: null, sender_id: userId,
+        id: null, _temp_id: tempId, sender_id: userId,
         recipients: { solo: { ciphertext, iv: "none" } },
         _plaintext: text, _username: username,
         created_at: new Date().toISOString(), reply_to_id: replyId,
       }]);
+      send({ reply_to_id: replyId, recipients: { solo: { ciphertext, iv: "none" } } });
       return;
     }
 
@@ -187,9 +199,8 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     const { ciphertext: selfCt, iv: selfIv } = await encryptMessage(peers[0][1], text);
     recipients[String(userId)] = { ciphertext: selfCt, iv: selfIv };
 
-    // Add optimistic bubble immediately
     setMessages(prev => [...prev, {
-      id: null, sender_id: userId,
+      id: null, _temp_id: tempId, sender_id: userId,
       recipients,
       _plaintext: text, _username: username,
       created_at: new Date().toISOString(), reply_to_id: replyId,
@@ -205,14 +216,11 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
   function onTouchEnd(e, msg) {
     if (touchStart.current === null) return;
     const diff = e.changedTouches[0].clientX - touchStart.current;
-    if (diff > 60) {
-      setReplyTo({ id: msg.id, plaintext: msg._plaintext, username: msg._username });
-    }
+    if (diff > 60) setReplyTo({ id: msg.id, plaintext: msg._plaintext, username: msg._username });
     touchStart.current = null;
   }
 
-  // Click to reply for desktop
-  function onClickReply(msg) {
+  function onDoubleClick(msg) {
     setReplyTo({ id: msg.id, plaintext: msg._plaintext, username: msg._username });
   }
 
@@ -235,16 +243,14 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
       <div style={styles.messages}>
         {messages.map((msg, i) => {
           const mine = Number(msg.sender_id) === Number(userId);
-          // Pass full messages array so reply lookup works on history
           const replyPreview = msg.reply_to_id ? getReplyPreview(msg.reply_to_id, messages) : null;
           return (
             <div
-              key={msg.id ?? i}
+              key={msg.id ?? msg._temp_id ?? i}
               style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start" }}
               onTouchStart={onTouchStart}
               onTouchEnd={(e) => onTouchEnd(e, msg)}
-              onDoubleClick={() => onClickReply(msg)}
-              title="Double-click to reply"
+              onDoubleClick={() => onDoubleClick(msg)}
             >
               <span style={styles.msgMeta}>
                 {!mine && <span style={styles.msgUsername}>{msg._username} · </span>}
@@ -265,6 +271,21 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
             </div>
           );
         })}
+
+        {/* Typing indicator */}
+        {typingUser && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
+            <div style={styles.typingBubble}>
+              <span style={styles.typingName}>{typingUser}</span>
+              <span style={styles.typingDots}>
+                <span style={styles.dot} />
+                <span style={styles.dot} />
+                <span style={styles.dot} />
+              </span>
+            </div>
+          </div>
+        )}
+
         <div ref={bottomRef} />
       </div>
 
@@ -285,7 +306,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
         <input
           style={{ ...styles.input, opacity: ready ? 1 : 0.5 }}
           value={input}
-          onChange={e => setInput(e.target.value)}
+          onChange={handleInputChange}
           placeholder={ready ? "Type a message..." : status}
           disabled={!ready}
         />
@@ -310,9 +331,9 @@ const styles = {
   msgUsername:     { color: "#7c3aed" },
   msgTime:         { color: "#444" },
   bubble:          { maxWidth: "70vw", padding: "10px 14px", borderRadius: "16px", fontSize: "0.9rem", lineHeight: 1.5, wordBreak: "break-word", cursor: "pointer" },
-  replyQuote:      { borderLeft: "3px solid #7c3aed", paddingLeft: "8px", marginBottom: "6px", display: "flex", flexDirection: "column", gap: "2px" },
-  replyQuoteUser:  { fontSize: "0.72rem", color: "#7c3aed", fontWeight: 600 },
-  replyQuoteText:  { fontSize: "0.78rem", color: "#aaa" },
+  replyQuote:      { borderLeft: "3px solid rgba(255,255,255,0.4)", paddingLeft: "8px", marginBottom: "6px", display: "flex", flexDirection: "column", gap: "2px" },
+  replyQuoteUser:  { fontSize: "0.72rem", color: "rgba(255,255,255,0.7)", fontWeight: 600 },
+  replyQuoteText:  { fontSize: "0.78rem", color: "rgba(255,255,255,0.5)" },
   replyBar:        { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 16px", background: "#1a1a1a", borderTop: "1px solid #2a2a2a" },
   replyBarContent: { display: "flex", flexDirection: "column", gap: "2px" },
   replyBarLabel:   { fontSize: "0.75rem", color: "#7c3aed", fontWeight: 600 },
@@ -321,4 +342,8 @@ const styles = {
   inputRow:        { display: "flex", gap: "8px", padding: "12px 16px", background: "#1a1a1a", borderTop: "1px solid #2a2a2a" },
   input:           { flex: 1, padding: "10px 14px", background: "#111", border: "1px solid #2a2a2a", borderRadius: "8px", color: "#fff", fontSize: "0.9rem" },
   sendBtn:         { padding: "10px 18px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "8px", cursor: "pointer", fontSize: "0.9rem" },
+  typingBubble:    { display: "flex", alignItems: "center", gap: "8px", background: "#1e1e1e", padding: "8px 14px", borderRadius: "16px", fontSize: "0.82rem" },
+  typingName:      { color: "#7c3aed", fontWeight: 600 },
+  typingDots:      { display: "flex", gap: "3px", alignItems: "center" },
+  dot:             { width: "6px", height: "6px", borderRadius: "50%", background: "#666", display: "inline-block", animation: "bounce 1.2s infinite" },
 };

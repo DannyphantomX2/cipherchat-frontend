@@ -8,16 +8,14 @@ export function useWebSocket(roomId, token, onMessage) {
     const socket = new WebSocket(
       `wss://cipherchat-backend-fuqa.onrender.com/ws/${roomId}?token=${token}`
     );
-
     socket.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
         onMessage(data);
       } catch (err) {
-        console.error("WS message parse error:", err, e.data);
+        console.error("WS parse error:", err);
       }
     };
-
     socket.onerror = (e) => console.error("WS error", e);
     socket.onclose = () => console.log("WS closed");
     ws.current = socket;
@@ -30,5 +28,11 @@ export function useWebSocket(roomId, token, onMessage) {
     }
   }, []);
 
-  return { send };
+  const sendTyping = useCallback((username) => {
+    if (ws.current?.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({ type: "typing", username }));
+    }
+  }, []);
+
+  return { send, sendTyping };
 }
