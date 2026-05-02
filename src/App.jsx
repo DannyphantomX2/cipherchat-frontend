@@ -18,6 +18,7 @@ export default function App() {
 
   function handleLogout() {
     localStorage.removeItem("token");
+    localStorage.removeItem("username");
     setToken(null);
     setUser(null);
     setRoom(null);
@@ -26,11 +27,11 @@ export default function App() {
   if (!token || !user) return <Auth onAuth={t => setToken(t)} />;
   if (room) return (
     <ChatRoom
-      room={room}
+      roomId={room.id}
       token={token}
       userId={user.id}
       username={user.username}
-      onBack={() => setRoom(null)}
+      onLeave={() => setRoom(null)}
     />
   );
   return <Lobby token={token} onSelectRoom={setRoom} onLogout={handleLogout} />;
