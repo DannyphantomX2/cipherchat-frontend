@@ -24,29 +24,35 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
 
   async function refreshSharedKeys() {
     if (!myKeys.current) return 0;
-    const keys = await getRoomKeys(token, room.id);
+    let keys = [];
+    try {
+      keys = await getRoomKeys(token, room.id);
+    } catch (e) {
+      console.error("getRoomKeys failed:", e);
+      return 0;
+    }
+    if (!Array.isArray(keys)) {
+      console.error("keys is not an array:", keys);
+      return 0;
+    }
     for (const entry of keys) {
       usernameMap.current[entry.user_id] = entry.username;
-      if (Number(entry.user_id) === Number(userId) || sharedKeys.current[entry.user_id]) continue;
-      const theirPub = await importPublicKey(entry.public_key);
-      sharedKeys.current[entry.user_id] = await deriveSharedKey(myKeys.current.privateKey, theirPub);
+      if (Number(entry.user_id) === Number(userId)) continue;
+      if (sharedKeys.current[entry.user_id]) continue;
+      try {
+        const theirPub = await importPublicKey(entry.public_key);
+        sharedKeys.current[entry.user_id] = await deriveSharedKey(myKeys.current.privateKey, theirPub);
+      } catch (e) {
+        console.error("key derivation failed for", entry.user_id, e);
+      }
     }
     return Object.keys(sharedKeys.current).length;
   }
 
-  async function setupEncryption() {
-    setStatus("Loading your key pair...");
-    const keyPair = await getOrCreateKeyPair(room.id);
-    myKeys.current = keyPair;
-    const pubB64 = await exportPublicKey(keyPair.publicKey);
-    setStatus("Publishing your public key...");
-    await publishKey(token, room.id, pubB64);
-    const peerCount = await refreshSharedKeys();
-
-    if (peerCount > 0) {
-      setStatus("Encrypted channel ready");
-      setReady(true);
+  async function loadMessages() {
+    try {
       const msgs = await getMessages(token, room.id);
+      if (!Array.isArray(msgs)) return;
       const decoded = await Promise.all(
         [...msgs].reverse().map(async (msg) => ({
           ...msg,
@@ -55,25 +61,8 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
         }))
       );
       setMessages(decoded);
-    } else {
-      setStatus("Waiting for someone to join...");
-      pollInterval.current = setInterval(async () => {
-        const count = await refreshSharedKeys();
-        if (count > 0) {
-          clearInterval(pollInterval.current);
-          setStatus("Encrypted channel ready");
-          setReady(true);
-          const msgs = await getMessages(token, room.id);
-          const decoded = await Promise.all(
-            [...msgs].reverse().map(async (msg) => ({
-              ...msg,
-              _plaintext: await tryDecrypt(msg.recipients, msg.sender_id),
-              _username: usernameMap.current[msg.sender_id] ?? "user" + msg.sender_id
-            }))
-          );
-          setMessages(decoded);
-        }
-      }, 3000);
+    } catch (e) {
+      console.error("loadMessages failed:", e);
     }
   }
 
@@ -85,7 +74,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     const mySlice = recipients[String(userId)];
     if (!mySlice) return "[message sent before you joined]";
     let keyToUse;
-    if (senderId === userId) {
+    if (Number(senderId) === Number(userId)) {
       keyToUse = Object.values(sharedKeys.current)[0];
     } else {
       if (!sharedKeys.current[senderId]) await refreshSharedKeys();
@@ -100,10 +89,38 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
   }
 
   useEffect(() => {
+    async function setupEncryption() {
+      try {
+        setStatus("Loading your key pair...");
+        const keyPair = await getOrCreateKeyPair(room.id);
+        myKeys.current = keyPair;
+        const pubB64 = await exportPublicKey(keyPair.publicKey);
+        setStatus("Publishing your public key...");
+        await publishKey(token, room.id, pubB64);
+        const peerCount = await refreshSharedKeys();
+        if (peerCount > 0) {
+          setStatus("Encrypted channel ready");
+          setReady(true);
+          await loadMessages();
+        } else {
+          setStatus("Waiting for someone to join...");
+          pollInterval.current = setInterval(async () => {
+            const count = await refreshSharedKeys();
+            if (count > 0) {
+              clearInterval(pollInterval.current);
+              setStatus("Encrypted channel ready");
+              setReady(true);
+              await loadMessages();
+            }
+          }, 3000);
+        }
+      } catch (e) {
+        console.error("setupEncryption failed:", e);
+        setStatus("Encryption setup failed: " + e.message);
+      }
+    }
     setupEncryption();
-    return () => {
-      if (pollInterval.current) clearInterval(pollInterval.current);
-    };
+    return () => { if (pollInterval.current) clearInterval(pollInterval.current); };
   }, [room.id]);
 
   const handleIncoming = useCallback(async (msg) => {
@@ -174,7 +191,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
       </div>
       <div style={styles.messages}>
         {messages.map((msg, i) => {
-          const mine = msg.sender_id === userId;
+          const mine = Number(msg.sender_id) === Number(userId);
           const replyPreview = msg.reply_to_id ? getReplyPreview(msg.reply_to_id) : null;
           return (
             <div
