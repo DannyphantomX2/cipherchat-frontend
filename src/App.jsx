@@ -27,11 +27,11 @@ export default function App() {
   if (!token || !user) return <Auth onAuth={t => setToken(t)} />;
   if (room) return (
     <ChatRoom
-      roomId={room.id}
+      room={room}
       token={token}
       userId={user.id}
       username={user.username}
-      onLeave={() => setRoom(null)}
+      onBack={() => setRoom(null)}
     />
   );
   return <Lobby token={token} onSelectRoom={setRoom} onLogout={handleLogout} />;
