@@ -5,8 +5,8 @@ import { exportPublicKey, importPublicKey, deriveSharedKey, encryptMessage, decr
 import { getOrCreateKeyPair } from "./keystore";
 
 function formatTime(iso) {
-  const d = new Date(iso);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const normalized = iso.endsWith("Z") ? iso : iso + "Z";
+  return new Date(normalized).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 export default function ChatRoom({ room, token, userId, username, onBack }) {
@@ -26,7 +26,8 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     if (!myKeys.current) return 0;
     let keys = [];
     try {
-      keys = await getRoomKeys(token, room.id);
+      // Fixed: correct argument order (roomId, token)
+      keys = await getRoomKeys(room.id, token);
     } catch (e) {
       console.error("getRoomKeys failed:", e);
       return 0;
@@ -69,7 +70,9 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
   async function tryDecrypt(recipients, senderId) {
     if (!recipients) return "[no content]";
     if (recipients.solo) {
-      try { return atob(recipients.solo.ciphertext); } catch { return "[solo decrypt failed]"; }
+      try {
+        return decodeURIComponent(escape(atob(recipients.solo.ciphertext)));
+      } catch { return "[solo decrypt failed]"; }
     }
     const mySlice = recipients[String(userId)];
     if (!mySlice) return "[message sent before you joined]";
@@ -99,7 +102,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
         await publishKey(token, room.id, pubB64);
         const peerCount = await refreshSharedKeys();
         if (peerCount > 0) {
-          setStatus("Encrypted channel ready");
+          setStatus("Encrypted channel ready ✓");
           setReady(true);
           await loadMessages();
         } else {
@@ -108,7 +111,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
             const count = await refreshSharedKeys();
             if (count > 0) {
               clearInterval(pollInterval.current);
-              setStatus("Encrypted channel ready");
+              setStatus("Encrypted channel ready ✓");
               setReady(true);
               await loadMessages();
             }
@@ -147,10 +150,19 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     const peers = Object.entries(sharedKeys.current);
     const payload = { reply_to_id: replyTo ? replyTo.id : null };
     setReplyTo(null);
+
     if (peers.length === 0) {
-      send({ ...payload, recipients: { solo: { ciphertext: btoa(text), iv: "none" } } });
+      send({ ...payload, recipients: { solo: { ciphertext: btoa(unescape(encodeURIComponent(text))), iv: "none" } } });
+      // Optimistic bubble for solo
+      setMessages(prev => [...prev, {
+        id: null, sender_id: userId,
+        recipients: { solo: { ciphertext: btoa(unescape(encodeURIComponent(text))), iv: "none" } },
+        _plaintext: text, _username: username,
+        created_at: new Date().toISOString(), reply_to_id: null,
+      }]);
       return;
     }
+
     const recipients = {};
     for (const [peerId, sharedKey] of peers) {
       const { ciphertext, iv } = await encryptMessage(sharedKey, text);
@@ -158,6 +170,15 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     }
     const { ciphertext: selfCt, iv: selfIv } = await encryptMessage(peers[0][1], text);
     recipients[String(userId)] = { ciphertext: selfCt, iv: selfIv };
+
+    // Optimistic bubble
+    setMessages(prev => [...prev, {
+      id: null, sender_id: userId,
+      recipients,
+      _plaintext: text, _username: username,
+      created_at: new Date().toISOString(), reply_to_id: replyTo ? replyTo.id : null,
+    }]);
+
     send({ ...payload, recipients });
   }
 
@@ -189,6 +210,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
         </div>
         <span style={styles.code}>Invite: {room.invite_code}</span>
       </div>
+
       <div style={styles.messages}>
         {messages.map((msg, i) => {
           const mine = Number(msg.sender_id) === Number(userId);
@@ -221,6 +243,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
         })}
         <div ref={bottomRef} />
       </div>
+
       {replyTo && (
         <div style={styles.replyBar}>
           <div style={styles.replyBarContent}>
@@ -230,9 +253,10 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
               {replyTo.plaintext && replyTo.plaintext.length > 60 ? "..." : ""}
             </span>
           </div>
-          <button style={styles.replyBarClose} onClick={() => setReplyTo(null)}>x</button>
+          <button style={styles.replyBarClose} onClick={() => setReplyTo(null)}>✕</button>
         </div>
       )}
+
       <form style={styles.inputRow} onSubmit={handleSend}>
         <input
           style={{ ...styles.input, opacity: ready ? 1 : 0.5 }}
@@ -241,34 +265,36 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
           placeholder={ready ? "Type a message..." : status}
           disabled={!ready}
         />
-        <button style={{ ...styles.sendBtn, opacity: ready ? 1 : 0.5 }} type="submit" disabled={!ready}>Send</button>
+        <button style={{ ...styles.sendBtn, opacity: ready ? 1 : 0.5 }} type="submit" disabled={!ready}>
+          Send
+        </button>
       </form>
     </div>
   );
 }
 
 const styles = {
-  container:      { display: "flex", flexDirection: "column", height: "100vh", background: "#0f0f0f", color: "#fff" },
-  header:         { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: "#1a1a1a", borderBottom: "1px solid #2a2a2a", gap: "12px" },
-  back:           { background: "none", border: "none", color: "#aaa", fontSize: "1.2rem", cursor: "pointer", padding: "4px 8px" },
-  headerCenter:   { display: "flex", flexDirection: "column", alignItems: "center", flex: 1 },
-  roomName:       { color: "#fff", fontWeight: 600, fontSize: "0.95rem" },
-  statusLine:     { color: "#666", fontSize: "0.72rem", marginTop: "2px" },
-  code:           { color: "#555", fontSize: "0.72rem", whiteSpace: "nowrap" },
-  messages:       { flex: 1, overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: "8px" },
-  msgMeta:        { fontSize: "0.72rem", color: "#555", marginBottom: "2px", paddingLeft: "4px", paddingRight: "4px" },
-  msgUsername:    { color: "#7c3aed" },
-  msgTime:        { color: "#444" },
-  bubble:         { maxWidth: "70vw", padding: "10px 14px", borderRadius: "16px", fontSize: "0.9rem", lineHeight: 1.5, wordBreak: "break-word" },
-  replyQuote:     { borderLeft: "3px solid #7c3aed", paddingLeft: "8px", marginBottom: "6px", display: "flex", flexDirection: "column", gap: "2px" },
-  replyQuoteUser: { fontSize: "0.72rem", color: "#7c3aed", fontWeight: 600 },
-  replyQuoteText: { fontSize: "0.78rem", color: "#aaa" },
-  replyBar:       { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 16px", background: "#1a1a1a", borderTop: "1px solid #2a2a2a" },
-  replyBarContent:{ display: "flex", flexDirection: "column", gap: "2px" },
-  replyBarLabel:  { fontSize: "0.75rem", color: "#7c3aed", fontWeight: 600 },
-  replyBarText:   { fontSize: "0.78rem", color: "#aaa" },
-  replyBarClose:  { background: "none", border: "none", color: "#666", fontSize: "1rem", cursor: "pointer" },
-  inputRow:       { display: "flex", gap: "8px", padding: "12px 16px", background: "#1a1a1a", borderTop: "1px solid #2a2a2a" },
-  input:          { flex: 1, padding: "10px 14px", background: "#111", border: "1px solid #2a2a2a", borderRadius: "8px", color: "#fff", fontSize: "0.9rem" },
-  sendBtn:        { padding: "10px 18px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "8px", cursor: "pointer", fontSize: "0.9rem" },
+  container:       { display: "flex", flexDirection: "column", height: "100vh", background: "#0f0f0f", color: "#fff" },
+  header:          { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: "#1a1a1a", borderBottom: "1px solid #2a2a2a", gap: "12px" },
+  back:            { background: "none", border: "none", color: "#aaa", fontSize: "1.2rem", cursor: "pointer", padding: "4px 8px" },
+  headerCenter:    { display: "flex", flexDirection: "column", alignItems: "center", flex: 1 },
+  roomName:        { color: "#fff", fontWeight: 600, fontSize: "0.95rem" },
+  statusLine:      { color: "#22c55e", fontSize: "0.72rem", marginTop: "2px" },
+  code:            { color: "#555", fontSize: "0.72rem", whiteSpace: "nowrap" },
+  messages:        { flex: 1, overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: "8px" },
+  msgMeta:         { fontSize: "0.72rem", color: "#555", marginBottom: "2px", paddingLeft: "4px", paddingRight: "4px" },
+  msgUsername:     { color: "#7c3aed" },
+  msgTime:         { color: "#444" },
+  bubble:          { maxWidth: "70vw", padding: "10px 14px", borderRadius: "16px", fontSize: "0.9rem", lineHeight: 1.5, wordBreak: "break-word" },
+  replyQuote:      { borderLeft: "3px solid #7c3aed", paddingLeft: "8px", marginBottom: "6px", display: "flex", flexDirection: "column", gap: "2px" },
+  replyQuoteUser:  { fontSize: "0.72rem", color: "#7c3aed", fontWeight: 600 },
+  replyQuoteText:  { fontSize: "0.78rem", color: "#aaa" },
+  replyBar:        { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 16px", background: "#1a1a1a", borderTop: "1px solid #2a2a2a" },
+  replyBarContent: { display: "flex", flexDirection: "column", gap: "2px" },
+  replyBarLabel:   { fontSize: "0.75rem", color: "#7c3aed", fontWeight: 600 },
+  replyBarText:    { fontSize: "0.78rem", color: "#aaa" },
+  replyBarClose:   { background: "none", border: "none", color: "#666", fontSize: "1rem", cursor: "pointer" },
+  inputRow:        { display: "flex", gap: "8px", padding: "12px 16px", background: "#1a1a1a", borderTop: "1px solid #2a2a2a" },
+  input:           { flex: 1, padding: "10px 14px", background: "#111", border: "1px solid #2a2a2a", borderRadius: "8px", color: "#fff", fontSize: "0.9rem" },
+  sendBtn:         { padding: "10px 18px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "8px", cursor: "pointer", fontSize: "0.9rem" },
 };
