@@ -23,14 +23,15 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
   const pollInterval = useRef(null);
 
   async function refreshSharedKeys() {
-    if (!myKeys.current) return;
+    if (!myKeys.current) return 0;
     const keys = await getRoomKeys(token, room.id);
     for (const entry of keys) {
       usernameMap.current[entry.user_id] = entry.username;
-      if (entry.user_id === userId || sharedKeys.current[entry.user_id]) continue;
+      if (Number(entry.user_id) === Number(userId) || sharedKeys.current[entry.user_id]) continue;
       const theirPub = await importPublicKey(entry.public_key);
       sharedKeys.current[entry.user_id] = await deriveSharedKey(myKeys.current.privateKey, theirPub);
     }
+    return Object.keys(sharedKeys.current).length;
   }
 
   async function setupEncryption() {
@@ -40,9 +41,9 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     const pubB64 = await exportPublicKey(keyPair.publicKey);
     setStatus("Publishing your public key...");
     await publishKey(token, room.id, pubB64);
-    await refreshSharedKeys();
+    const peerCount = await refreshSharedKeys();
 
-    if (Object.keys(sharedKeys.current).length > 0) {
+    if (peerCount > 0) {
       setStatus("Encrypted channel ready");
       setReady(true);
       const msgs = await getMessages(token, room.id);
@@ -57,8 +58,8 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     } else {
       setStatus("Waiting for someone to join...");
       pollInterval.current = setInterval(async () => {
-        await refreshSharedKeys();
-        if (Object.keys(sharedKeys.current).length > 0) {
+        const count = await refreshSharedKeys();
+        if (count > 0) {
           clearInterval(pollInterval.current);
           setStatus("Encrypted channel ready");
           setReady(true);
