@@ -18,9 +18,8 @@ export default function Auth({ onAuth }) {
         return;
       }
       const { access_token } = await login(username, password);
-      localStorage.setItem("token", data.access_token)
-const payload = JSON.parse(atob(data.access_token.split(".")[1]))
-localStorage.setItem("username", payload.username || formData.username)
+      localStorage.setItem("token", access_token);
+      localStorage.setItem("username", username);
       onAuth(access_token);
     } catch (err) {
       setError(err.message);
@@ -30,11 +29,10 @@ localStorage.setItem("username", payload.username || formData.username)
   return (
     <div style={styles.container}>
 
-      {/* Welcome banner */}
       <div style={styles.banner}>
         <div style={styles.bannerIcon}>🔒</div>
         <h1 style={styles.bannerTitle}>CipherChat</h1>
-        <p style={styles.bannerTagline}>Private messaging, that means it's.</p>
+        <p style={styles.bannerTagline}>Private messaging, that means it.</p>
         <div style={styles.features}>
           <div style={styles.feature}>
             <span style={styles.featureIcon}>🔑</span>
@@ -60,7 +58,6 @@ localStorage.setItem("username", payload.username || formData.username)
         </div>
       </div>
 
-      {/* Auth card */}
       <div style={styles.card}>
         <h2 style={styles.title}>CipherChat</h2>
         <p style={styles.sub}>End-to-end encrypted messaging</p>
@@ -115,7 +112,6 @@ localStorage.setItem("username", payload.username || formData.username)
         )}
       </div>
 
-      {/* Footer */}
       <p style={styles.footer}>Built by Ndabai Daniel</p>
 
     </div>
