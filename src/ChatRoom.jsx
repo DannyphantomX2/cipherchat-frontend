@@ -21,12 +21,12 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
   const usernameMap = useRef({});
   const touchStart = useRef(null);
   const pollInterval = useRef(null);
+  const sentIds = useRef(new Set()); // track optimistic messages to skip echo
 
   async function refreshSharedKeys() {
     if (!myKeys.current) return 0;
     let keys = [];
     try {
-      // Fixed: correct argument order (roomId, token)
       keys = await getRoomKeys(room.id, token);
     } catch (e) {
       console.error("getRoomKeys failed:", e);
@@ -50,23 +50,6 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     return Object.keys(sharedKeys.current).length;
   }
 
-  async function loadMessages() {
-    try {
-      const msgs = await getMessages(token, room.id);
-      if (!Array.isArray(msgs)) return;
-      const decoded = await Promise.all(
-        [...msgs].reverse().map(async (msg) => ({
-          ...msg,
-          _plaintext: await tryDecrypt(msg.recipients, msg.sender_id),
-          _username: usernameMap.current[msg.sender_id] ?? "user" + msg.sender_id
-        }))
-      );
-      setMessages(decoded);
-    } catch (e) {
-      console.error("loadMessages failed:", e);
-    }
-  }
-
   async function tryDecrypt(recipients, senderId) {
     if (!recipients) return "[no content]";
     if (recipients.solo) {
@@ -88,6 +71,25 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
       return await decryptMessage(keyToUse, mySlice.ciphertext, mySlice.iv);
     } catch {
       return "[decrypt failed]";
+    }
+  }
+
+  async function loadMessages() {
+    try {
+      const msgs = await getMessages(token, room.id);
+      if (!Array.isArray(msgs)) return;
+      // Reverse first so oldest is first, then decode
+      const reversed = [...msgs].reverse();
+      const decoded = await Promise.all(
+        reversed.map(async (msg) => ({
+          ...msg,
+          _plaintext: await tryDecrypt(msg.recipients, msg.sender_id),
+          _username: usernameMap.current[msg.sender_id] ?? "user" + msg.sender_id
+        }))
+      );
+      setMessages(decoded);
+    } catch (e) {
+      console.error("loadMessages failed:", e);
     }
   }
 
@@ -127,6 +129,16 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
   }, [room.id]);
 
   const handleIncoming = useCallback(async (msg) => {
+    // Skip echo of our own messages — we already added optimistic bubble
+    if (Number(msg.sender_id) === Number(userId)) {
+      // Update the optimistic bubble with the real server ID
+      setMessages(prev => prev.map(m =>
+        m.id === null && m._plaintext && sentIds.current.has(m._plaintext)
+          ? { ...m, id: msg.id }
+          : m
+      ));
+      return;
+    }
     await refreshSharedKeys();
     const text = await tryDecrypt(msg.recipients, msg.sender_id);
     setMessages(prev => [...prev, {
@@ -134,7 +146,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
       _plaintext: text,
       _username: usernameMap.current[msg.sender_id] ?? "user" + msg.sender_id
     }]);
-  }, []);
+  }, [userId]);
 
   const { send } = useWebSocket(room.id, token, handleIncoming);
 
@@ -148,17 +160,21 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     const text = input.trim();
     setInput("");
     const peers = Object.entries(sharedKeys.current);
-    const payload = { reply_to_id: replyTo ? replyTo.id : null };
+    const replyId = replyTo ? replyTo.id : null;
     setReplyTo(null);
 
+    // Track this text so incoming echo can be skipped
+    sentIds.current.add(text);
+    setTimeout(() => sentIds.current.delete(text), 10000);
+
     if (peers.length === 0) {
-      send({ ...payload, recipients: { solo: { ciphertext: btoa(unescape(encodeURIComponent(text))), iv: "none" } } });
-      // Optimistic bubble for solo
+      const ciphertext = btoa(unescape(encodeURIComponent(text)));
+      send({ reply_to_id: replyId, recipients: { solo: { ciphertext, iv: "none" } } });
       setMessages(prev => [...prev, {
         id: null, sender_id: userId,
-        recipients: { solo: { ciphertext: btoa(unescape(encodeURIComponent(text))), iv: "none" } },
+        recipients: { solo: { ciphertext, iv: "none" } },
         _plaintext: text, _username: username,
-        created_at: new Date().toISOString(), reply_to_id: null,
+        created_at: new Date().toISOString(), reply_to_id: replyId,
       }]);
       return;
     }
@@ -171,15 +187,15 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     const { ciphertext: selfCt, iv: selfIv } = await encryptMessage(peers[0][1], text);
     recipients[String(userId)] = { ciphertext: selfCt, iv: selfIv };
 
-    // Optimistic bubble
+    // Add optimistic bubble immediately
     setMessages(prev => [...prev, {
       id: null, sender_id: userId,
       recipients,
       _plaintext: text, _username: username,
-      created_at: new Date().toISOString(), reply_to_id: replyTo ? replyTo.id : null,
+      created_at: new Date().toISOString(), reply_to_id: replyId,
     }]);
 
-    send({ ...payload, recipients });
+    send({ reply_to_id: replyId, recipients });
   }
 
   function onTouchStart(e) {
@@ -195,8 +211,13 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     touchStart.current = null;
   }
 
-  function getReplyPreview(replyToId) {
-    const original = messages.find(m => m.id === replyToId);
+  // Click to reply for desktop
+  function onClickReply(msg) {
+    setReplyTo({ id: msg.id, plaintext: msg._plaintext, username: msg._username });
+  }
+
+  function getReplyPreview(replyToId, allMessages) {
+    const original = allMessages.find(m => m.id === replyToId);
     return original ? { text: original._plaintext, username: original._username } : null;
   }
 
@@ -214,13 +235,16 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
       <div style={styles.messages}>
         {messages.map((msg, i) => {
           const mine = Number(msg.sender_id) === Number(userId);
-          const replyPreview = msg.reply_to_id ? getReplyPreview(msg.reply_to_id) : null;
+          // Pass full messages array so reply lookup works on history
+          const replyPreview = msg.reply_to_id ? getReplyPreview(msg.reply_to_id, messages) : null;
           return (
             <div
               key={msg.id ?? i}
               style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start" }}
               onTouchStart={onTouchStart}
               onTouchEnd={(e) => onTouchEnd(e, msg)}
+              onDoubleClick={() => onClickReply(msg)}
+              title="Double-click to reply"
             >
               <span style={styles.msgMeta}>
                 {!mine && <span style={styles.msgUsername}>{msg._username} · </span>}
@@ -285,7 +309,7 @@ const styles = {
   msgMeta:         { fontSize: "0.72rem", color: "#555", marginBottom: "2px", paddingLeft: "4px", paddingRight: "4px" },
   msgUsername:     { color: "#7c3aed" },
   msgTime:         { color: "#444" },
-  bubble:          { maxWidth: "70vw", padding: "10px 14px", borderRadius: "16px", fontSize: "0.9rem", lineHeight: 1.5, wordBreak: "break-word" },
+  bubble:          { maxWidth: "70vw", padding: "10px 14px", borderRadius: "16px", fontSize: "0.9rem", lineHeight: 1.5, wordBreak: "break-word", cursor: "pointer" },
   replyQuote:      { borderLeft: "3px solid #7c3aed", paddingLeft: "8px", marginBottom: "6px", display: "flex", flexDirection: "column", gap: "2px" },
   replyQuoteUser:  { fontSize: "0.72rem", color: "#7c3aed", fontWeight: 600 },
   replyQuoteText:  { fontSize: "0.78rem", color: "#aaa" },
