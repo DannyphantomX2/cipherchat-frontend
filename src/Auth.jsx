@@ -18,7 +18,9 @@ export default function Auth({ onAuth }) {
         return;
       }
       const { access_token } = await login(username, password);
-      localStorage.setItem("token", access_token);
+      localStorage.setItem("token", data.access_token)
+const payload = JSON.parse(atob(data.access_token.split(".")[1]))
+localStorage.setItem("username", payload.username || formData.username)
       onAuth(access_token);
     } catch (err) {
       setError(err.message);
