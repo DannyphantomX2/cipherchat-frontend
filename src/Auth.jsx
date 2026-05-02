@@ -32,7 +32,7 @@ export default function Auth({ onAuth }) {
       <div style={styles.banner}>
         <div style={styles.bannerIcon}>🔒</div>
         <h1 style={styles.bannerTitle}>CipherChat</h1>
-        <p style={styles.bannerTagline}>Private messaging that means it.</p>
+        <p style={styles.bannerTagline}>Private messaging, that means it's.</p>
         <div style={styles.features}>
           <div style={styles.feature}>
             <span style={styles.featureIcon}>🔑</span>
@@ -113,31 +113,35 @@ export default function Auth({ onAuth }) {
         )}
       </div>
 
+      {/* Footer */}
+      <p style={styles.footer}>Built by Ndabai Daniel</p>
+
     </div>
   );
 }
 
 const styles = {
-  container:      { display: "flex", minHeight: "100vh", alignItems: "center", justifyContent: "center", background: "#0f0f0f", gap: "48px", padding: "32px", flexWrap: "wrap" },
-  banner:         { maxWidth: "420px", flex: "1 1 320px" },
-  bannerIcon:     { fontSize: "2.5rem", marginBottom: "12px" },
-  bannerTitle:    { color: "#fff", fontSize: "2.2rem", fontWeight: 700, margin: "0 0 8px 0", fontFamily: "Arial" },
-  bannerTagline:  { color: "#888", fontSize: "1rem", margin: "0 0 32px 0", fontFamily: "Arial" },
-  features:       { display: "flex", flexDirection: "column", gap: "20px" },
-  feature:        { display: "flex", alignItems: "flex-start", gap: "14px" },
-  featureIcon:    { fontSize: "1.4rem", marginTop: "2px" },
-  featureTitle:   { color: "#fff", fontWeight: 600, fontSize: "0.95rem", marginBottom: "4px", fontFamily: "Arial" },
-  featureDesc:    { color: "#666", fontSize: "0.82rem", lineHeight: 1.5, fontFamily: "Arial" },
-  card:           { background: "#1a1a1a", padding: "2rem", borderRadius: "12px", width: "100%", maxWidth: "380px", border: "1px solid #2a2a2a", flex: "0 0 380px" },
-  title:          { color: "#fff", margin: 0, fontSize: "1.5rem", fontFamily: "Arial" },
-  sub:            { color: "#666", fontSize: "0.85rem", marginTop: "4px", marginBottom: "1.5rem", fontFamily: "Arial" },
-  tabs:           { display: "flex", marginBottom: "1.2rem", gap: "8px" },
-  tab:            { flex: 1, padding: "8px", background: "transparent", border: "1px solid #333", color: "#666", borderRadius: "6px", cursor: "pointer", fontFamily: "Arial" },
-  activeTab:      { flex: 1, padding: "8px", background: "#7c3aed", border: "none", color: "#fff", borderRadius: "6px", cursor: "pointer", fontFamily: "Arial" },
-  form:           { display: "flex", flexDirection: "column", gap: "12px" },
-  input:          { padding: "10px 12px", background: "#111", border: "1px solid #2a2a2a", borderRadius: "6px", color: "#fff", fontSize: "0.95rem", fontFamily: "Arial" },
-  button:         { padding: "10px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "0.95rem", fontFamily: "Arial" },
-  error:          { color: "#f87171", fontSize: "0.85rem", margin: 0, fontFamily: "Arial" },
-  hint:           { color: "#555", fontSize: "0.82rem", textAlign: "center", marginTop: "12px", fontFamily: "Arial" },
-  link:           { color: "#7c3aed", cursor: "pointer" },
+  container:     { display: "flex", minHeight: "100vh", alignItems: "center", justifyContent: "center", background: "#0f0f0f", gap: "48px", padding: "32px", flexWrap: "wrap" },
+  banner:        { maxWidth: "420px", flex: "1 1 320px" },
+  bannerIcon:    { fontSize: "2.5rem", marginBottom: "12px" },
+  bannerTitle:   { color: "#fff", fontSize: "2.2rem", fontWeight: 700, margin: "0 0 8px 0", fontFamily: "Arial" },
+  bannerTagline: { color: "#888", fontSize: "1rem", margin: "0 0 32px 0", fontFamily: "Arial" },
+  features:      { display: "flex", flexDirection: "column", gap: "20px" },
+  feature:       { display: "flex", alignItems: "flex-start", gap: "14px" },
+  featureIcon:   { fontSize: "1.4rem", marginTop: "2px" },
+  featureTitle:  { color: "#fff", fontWeight: 600, fontSize: "0.95rem", marginBottom: "4px", fontFamily: "Arial" },
+  featureDesc:   { color: "#666", fontSize: "0.82rem", lineHeight: 1.5, fontFamily: "Arial" },
+  card:          { background: "#1a1a1a", padding: "2rem", borderRadius: "12px", width: "100%", maxWidth: "380px", border: "1px solid #2a2a2a", flex: "0 0 380px" },
+  title:         { color: "#fff", margin: 0, fontSize: "1.5rem", fontFamily: "Arial" },
+  sub:           { color: "#666", fontSize: "0.85rem", marginTop: "4px", marginBottom: "1.5rem", fontFamily: "Arial" },
+  tabs:          { display: "flex", marginBottom: "1.2rem", gap: "8px" },
+  tab:           { flex: 1, padding: "8px", background: "transparent", border: "1px solid #333", color: "#666", borderRadius: "6px", cursor: "pointer", fontFamily: "Arial" },
+  activeTab:     { flex: 1, padding: "8px", background: "#7c3aed", border: "none", color: "#fff", borderRadius: "6px", cursor: "pointer", fontFamily: "Arial" },
+  form:          { display: "flex", flexDirection: "column", gap: "12px" },
+  input:         { padding: "10px 12px", background: "#111", border: "1px solid #2a2a2a", borderRadius: "6px", color: "#fff", fontSize: "0.95rem", fontFamily: "Arial" },
+  button:        { padding: "10px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "0.95rem", fontFamily: "Arial" },
+  error:         { color: "#f87171", fontSize: "0.85rem", margin: 0, fontFamily: "Arial" },
+  hint:          { color: "#555", fontSize: "0.82rem", textAlign: "center", marginTop: "12px", fontFamily: "Arial" },
+  link:          { color: "#7c3aed", cursor: "pointer" },
+  footer:        { color: "#333", fontSize: "0.75rem", textAlign: "center", width: "100%", fontFamily: "Arial", marginTop: "8px" },
 };
