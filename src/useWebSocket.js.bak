@@ -1,0 +1,42 @@
+import { useEffect, useRef, useCallback } from "react";
+
+export function useWebSocket(roomId, token, onMessage) {
+  const ws = useRef(null);
+
+  useEffect(() => {
+    if (!roomId || !token) return;
+
+    const url = `ws://localhost:8000/ws/${roomId}?token=${token}`;
+    ws.current = new WebSocket(url);
+
+    ws.current.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      onMessage(data);
+    };
+
+    ws.current.onerror = (e) => console.error("WS error", e);
+
+    return () => ws.current?.close();
+  }, [roomId, token]);
+
+  const sendMessage = useCallback((payload) => {
+    const msg_id = crypto.randomUUID();
+
+    if (ws.current?.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({ ...payload, msg_id }));
+    }
+
+    return msg_id;
+  }, []);
+
+  const sendTyping = useCallback((username) => {
+    if (ws.current?.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({
+        type: "typing",
+        username
+      }));
+    }
+  }, []);
+
+  return { sendMessage, sendTyping };
+}

@@ -1,0 +1,316 @@
+import { useState, useEffect, useRef } from "react";
+import { useWebSocket } from "./useWebSocket";
+import { getOrCreateKeyPair } from "./keystore";
+import {
+  exportPublicKey, importPublicKey,
+  deriveSharedKey, encryptMessage, decryptMessage
+} from "./crypto";
+import { getRoomKeys, postRoomKey, getRoomMessages } from "./api";
+
+function StatusTick({ status }) {
+  if (status === "sending")   return <span>○</span>;
+  if (status === "delivered") return <span style={{ color: "#4fc3f7" }}>✓✓</span>;
+  return null;
+}
+
+export default function ChatRoom({ roomId, token, username, onLeave }) {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [typingUser, setTypingUser] = useState(null);
+
+  const [uiReady, setUiReady] = useState(false);
+  const [cryptoReady, setCryptoReady] = useState(false);
+  const [myUserId, setMyUserId] = useState(null);
+
+  const sharedKeyRef = useRef(null);
+  const myUserIdRef = useRef(null);
+  const pendingRef = useRef({});
+  const typingTimeout = useRef(null);
+  const bottomRef = useRef(null);
+
+  // =====================
+  // INCOMING EVENTS
+  // =====================
+  const handleIncoming = async (data) => {
+
+    // -------- TYPING --------
+    if (data.type === "typing") {
+      setTypingUser(data.username || `user_${data.user_id}`);
+
+      clearTimeout(typingTimeout.current);
+      typingTimeout.current = setTimeout(() => {
+        setTypingUser(null);
+      }, 2000);
+
+      return;
+    }
+
+    // -------- PRESENCE --------
+    if (data.type === "presence") {
+      console.log("Presence:", data);
+      return;
+    }
+
+    // -------- ACK --------
+    if (data.type === "ack") {
+      const { msg_id } = data;
+
+      if (pendingRef.current[msg_id] !== undefined) {
+        const idx = pendingRef.current[msg_id];
+
+        setMessages(prev => {
+          const next = [...prev];
+          if (next[idx]) next[idx] = { ...next[idx], status: "delivered" };
+          return next;
+        });
+
+        delete pendingRef.current[msg_id];
+      }
+
+      return;
+    }
+
+    // -------- FILE --------
+    if (data.type === "file") {
+      const fileUrl = `data:application/octet-stream;base64,${data.content}`;
+
+      setMessages(prev => [...prev, {
+        id: crypto.randomUUID(),
+        sender_id: data.user_id,
+        text: `[File] ${data.filename}`,
+        file: fileUrl,
+        username: `user_${data.user_id}`,
+        ts: new Date().toISOString(),
+      }]);
+
+      return;
+    }
+
+    // -------- MESSAGE --------
+    if (data.type !== "message") return;
+
+    const { msg_id, sender_id, ciphertext, iv, username: senderName, created_at } = data;
+
+    try {
+      let text;
+
+      if (iv === "solo") {
+        text = atob(ciphertext);
+      } else if (sharedKeyRef.current) {
+        text = await decryptMessage(sharedKeyRef.current, ciphertext, iv);
+      } else {
+        text = "[waiting for key exchange…]";
+      }
+
+      setMessages(prev => [...prev, {
+        id: data.db_id,
+        sender_id,
+        text,
+        username: senderName || `user_${sender_id}`,
+        ts: created_at,
+        status: null,
+      }]);
+
+    } catch {
+      setMessages(prev => [...prev, {
+        id: data.db_id,
+        sender_id,
+        text: "[decrypt failed]",
+        username: senderName || `user_${sender_id}`,
+        ts: created_at,
+        status: null,
+      }]);
+    }
+  };
+
+  const { sendMessage, sendTyping } = useWebSocket(roomId, token, handleIncoming);
+
+  // =====================
+  // INIT
+  // =====================
+  useEffect(() => {
+    if (!roomId || !token) return;
+
+    let cancelled = false;
+
+    (async () => {
+      const uid = JSON.parse(
+        atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))
+      ).sub;
+
+      myUserIdRef.current = Number(uid);
+      if (!cancelled) setMyUserId(Number(uid));
+
+      const { privateKey, publicKey } = await getOrCreateKeyPair(roomId);
+      const myPubExported = await exportPublicKey(publicKey);
+      await postRoomKey(roomId, token, myPubExported);
+
+      if (!cancelled) setUiReady(true);
+
+      const keys = await getRoomKeys(roomId, token);
+      const others = keys.filter(k => k.user_id !== Number(uid));
+
+      if (others.length > 0) {
+        const theirPub = await importPublicKey(others[0].public_key);
+        sharedKeyRef.current = await deriveSharedKey(privateKey, theirPub);
+      }
+
+      if (!cancelled) setCryptoReady(true);
+
+      const history = await getRoomMessages(roomId, token);
+      if (cancelled) return;
+
+      const decoded = await Promise.all(history.map(async (m) => {
+        try {
+          let text;
+
+          if (m.iv === "solo") {
+            text = decodeURIComponent(escape(atob(m.ciphertext)));
+          } else if (sharedKeyRef.current) {
+            text = await decryptMessage(sharedKeyRef.current, m.ciphertext, m.iv);
+          } else {
+            text = "[encrypted]";
+          }
+
+          return {
+            id: m.id,
+            sender_id: m.sender_id,
+            text,
+            username: m.username ?? `user_${m.sender_id}`,
+            ts: m.created_at,
+            status: null,
+          };
+
+        } catch {
+          return {
+            id: m.id,
+            sender_id: m.sender_id,
+            text: "[decrypt failed]",
+            username: `user_${m.sender_id}`,
+            ts: m.created_at,
+            status: null,
+          };
+        }
+      }));
+
+      if (!cancelled) setMessages(decoded);
+    })();
+
+    return () => { cancelled = true; };
+  }, [roomId, token]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // =====================
+  // SEND MESSAGE
+  // =====================
+  const handleSend = async () => {
+    const text = input.trim();
+    if (!text || !uiReady) return;
+
+    setInput("");
+
+    let ciphertext, iv;
+
+    if (sharedKeyRef.current) {
+      ({ ciphertext, iv } = await encryptMessage(sharedKeyRef.current, text));
+    } else {
+      ciphertext = btoa(unescape(encodeURIComponent(text)));
+      iv = "solo";
+    }
+
+    const msg_id = sendMessage({ ciphertext, iv, username });
+
+    setMessages(prev => {
+      pendingRef.current[msg_id] = prev.length;
+
+      return [...prev, {
+        id: null,
+        sender_id: myUserIdRef.current,
+        text,
+        username,
+        ts: new Date().toISOString(),
+        status: "sending",
+      }];
+    });
+  };
+
+  // =====================
+  // TYPING
+  // =====================
+  const handleTyping = (e) => {
+    setInput(e.target.value);
+    sendTyping(username);
+  };
+
+  // =====================
+  // FILE SEND
+  // =====================
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      sendMessage({
+        type: "file",
+        filename: file.name,
+        content: reader.result.split(",")[1],
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const isMine = (msg) => msg.sender_id === myUserId;
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100vh", background:"#111", color:"#eee" }}>
+
+      <div style={{ padding:10, background:"#1a1a1a" }}>
+        Room {roomId}
+        {typingUser && <span style={{ marginLeft:10, color:"#4fc3f7" }}>{typingUser} is typing...</span>}
+        <button onClick={onLeave} style={{ float:"right" }}>Leave</button>
+      </div>
+
+      <div style={{ flex:1, overflowY:"auto", padding:10 }}>
+        {messages.map((m, i) => (
+          <div key={i} style={{ textAlign: isMine(m) ? "right" : "left" }}>
+            <div style={{
+              display:"inline-block",
+              padding:8,
+              margin:4,
+              borderRadius:10,
+              background: isMine(m) ? "#1a6b3c" : "#2a2a2a"
+            }}>
+              {!isMine(m) && <div style={{ fontSize:10 }}>{m.username}</div>}
+              <div>{m.text}</div>
+
+              {m.file && (
+                <a href={m.file} download style={{ display:"block", marginTop:5 }}>
+                  Download file
+                </a>
+              )}
+
+              <div style={{ fontSize:10 }}>
+                {new Date(m.ts).toLocaleTimeString()} {isMine(m) && <StatusTick status={m.status} />}
+              </div>
+            </div>
+          </div>
+        ))}
+        <div ref={bottomRef} />
+      </div>
+
+      <div style={{ display:"flex", padding:10 }}>
+        <textarea
+          value={input}
+          onChange={handleTyping}
+          style={{ flex:1 }}
+        />
+        <input type="file" onChange={handleFile} />
+        <button onClick={handleSend}>Send</button>
+      </div>
+    </div>
+  );
+}
