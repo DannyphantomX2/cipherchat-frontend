@@ -20,6 +20,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
   const sharedKeys = useRef({});
   const usernameMap = useRef({});
   const touchStart = useRef(null);
+  const pollInterval = useRef(null);
 
   async function refreshSharedKeys() {
     if (!myKeys.current) return;
@@ -40,8 +41,39 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     setStatus("Publishing your public key...");
     await publishKey(token, room.id, pubB64);
     await refreshSharedKeys();
-    setStatus("Encrypted channel ready");
-    setReady(true);
+
+    if (Object.keys(sharedKeys.current).length > 0) {
+      setStatus("Encrypted channel ready");
+      setReady(true);
+      const msgs = await getMessages(token, room.id);
+      const decoded = await Promise.all(
+        [...msgs].reverse().map(async (msg) => ({
+          ...msg,
+          _plaintext: await tryDecrypt(msg.recipients, msg.sender_id),
+          _username: usernameMap.current[msg.sender_id] ?? "user" + msg.sender_id
+        }))
+      );
+      setMessages(decoded);
+    } else {
+      setStatus("Waiting for someone to join...");
+      pollInterval.current = setInterval(async () => {
+        await refreshSharedKeys();
+        if (Object.keys(sharedKeys.current).length > 0) {
+          clearInterval(pollInterval.current);
+          setStatus("Encrypted channel ready");
+          setReady(true);
+          const msgs = await getMessages(token, room.id);
+          const decoded = await Promise.all(
+            [...msgs].reverse().map(async (msg) => ({
+              ...msg,
+              _plaintext: await tryDecrypt(msg.recipients, msg.sender_id),
+              _username: usernameMap.current[msg.sender_id] ?? "user" + msg.sender_id
+            }))
+          );
+          setMessages(decoded);
+        }
+      }, 3000);
+    }
   }
 
   async function tryDecrypt(recipients, senderId) {
@@ -67,18 +99,10 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
   }
 
   useEffect(() => {
-    setupEncryption().then(async () => {
-      const msgs = await getMessages(token, room.id);
-      const reversed = [...msgs].reverse();
-      const decoded = await Promise.all(
-        reversed.map(async (msg) => ({
-          ...msg,
-          _plaintext: await tryDecrypt(msg.recipients, msg.sender_id),
-          _username: usernameMap.current[msg.sender_id] ?? "user" + msg.sender_id
-        }))
-      );
-      setMessages(decoded);
-    });
+    setupEncryption();
+    return () => {
+      if (pollInterval.current) clearInterval(pollInterval.current);
+    };
   }, [room.id]);
 
   const handleIncoming = useCallback(async (msg) => {
@@ -196,39 +220,37 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
           style={{ ...styles.input, opacity: ready ? 1 : 0.5 }}
           value={input}
           onChange={e => setInput(e.target.value)}
-          placeholder={ready ? "Type a message..." : "Setting up encryption..."}
+          placeholder={ready ? "Type a message..." : status}
           disabled={!ready}
         />
-        <button style={{ ...styles.sendBtn, opacity: ready ? 1 : 0.5 }} type="submit" disabled={!ready}>
-          Send
-        </button>
+        <button style={{ ...styles.sendBtn, opacity: ready ? 1 : 0.5 }} type="submit" disabled={!ready}>Send</button>
       </form>
     </div>
   );
 }
 
 const styles = {
-  container: { display: "flex", flexDirection: "column", height: "100vh", background: "#0f0f0f" },
-  header: { display: "flex", alignItems: "center", gap: "12px", padding: "12px 16px", background: "#1a1a1a", borderBottom: "1px solid #2a2a2a" },
-  back: { background: "none", border: "none", color: "#aaa", fontSize: "1.2rem", cursor: "pointer" },
-  headerCenter: { flex: 1, display: "flex", flexDirection: "column" },
-  roomName: { color: "#fff", fontWeight: 600 },
-  statusLine: { color: "#22c55e", fontSize: "0.72rem", marginTop: "2px" },
-  code: { color: "#666", fontSize: "0.75rem" },
-  messages: { flex: 1, overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: "10px" },
-  msgMeta: { fontSize: "0.72rem", marginBottom: "3px", color: "#555" },
-  msgUsername: { color: "#a78bfa" },
-  msgTime: { color: "#444" },
-  bubble: { maxWidth: "70%", padding: "10px 14px", borderRadius: "12px", color: "#fff", fontSize: "0.9rem", wordBreak: "break-word" },
-  replyQuote: { borderLeft: "3px solid #a78bfa", paddingLeft: "8px", marginBottom: "6px", opacity: 0.8 },
-  replyQuoteUser: { display: "block", fontSize: "0.72rem", color: "#a78bfa", fontWeight: 600, marginBottom: "2px" },
-  replyQuoteText: { display: "block", fontSize: "0.8rem", color: "#ccc" },
-  replyBar: { display: "flex", alignItems: "center", background: "#1a1a1a", borderTop: "1px solid #2a2a2a", padding: "8px 16px", gap: "8px" },
-  replyBarContent: { flex: 1, borderLeft: "3px solid #7c3aed", paddingLeft: "10px" },
-  replyBarLabel: { display: "block", fontSize: "0.72rem", color: "#a78bfa", fontWeight: 600 },
-  replyBarText: { display: "block", fontSize: "0.8rem", color: "#888", marginTop: "2px" },
-  replyBarClose: { background: "none", border: "none", color: "#666", fontSize: "1rem", cursor: "pointer", padding: "4px" },
-  inputRow: { display: "flex", gap: "8px", padding: "12px 16px", borderTop: "1px solid #2a2a2a", background: "#1a1a1a" },
-  input: { flex: 1, padding: "10px 12px", background: "#111", border: "1px solid #2a2a2a", borderRadius: "6px", color: "#fff", fontSize: "0.9rem" },
-  sendBtn: { padding: "10px 18px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer" }
+  container:      { display: "flex", flexDirection: "column", height: "100vh", background: "#0f0f0f", color: "#fff" },
+  header:         { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: "#1a1a1a", borderBottom: "1px solid #2a2a2a", gap: "12px" },
+  back:           { background: "none", border: "none", color: "#aaa", fontSize: "1.2rem", cursor: "pointer", padding: "4px 8px" },
+  headerCenter:   { display: "flex", flexDirection: "column", alignItems: "center", flex: 1 },
+  roomName:       { color: "#fff", fontWeight: 600, fontSize: "0.95rem" },
+  statusLine:     { color: "#666", fontSize: "0.72rem", marginTop: "2px" },
+  code:           { color: "#555", fontSize: "0.72rem", whiteSpace: "nowrap" },
+  messages:       { flex: 1, overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: "8px" },
+  msgMeta:        { fontSize: "0.72rem", color: "#555", marginBottom: "2px", paddingLeft: "4px", paddingRight: "4px" },
+  msgUsername:    { color: "#7c3aed" },
+  msgTime:        { color: "#444" },
+  bubble:         { maxWidth: "70vw", padding: "10px 14px", borderRadius: "16px", fontSize: "0.9rem", lineHeight: 1.5, wordBreak: "break-word" },
+  replyQuote:     { borderLeft: "3px solid #7c3aed", paddingLeft: "8px", marginBottom: "6px", display: "flex", flexDirection: "column", gap: "2px" },
+  replyQuoteUser: { fontSize: "0.72rem", color: "#7c3aed", fontWeight: 600 },
+  replyQuoteText: { fontSize: "0.78rem", color: "#aaa" },
+  replyBar:       { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 16px", background: "#1a1a1a", borderTop: "1px solid #2a2a2a" },
+  replyBarContent:{ display: "flex", flexDirection: "column", gap: "2px" },
+  replyBarLabel:  { fontSize: "0.75rem", color: "#7c3aed", fontWeight: 600 },
+  replyBarText:   { fontSize: "0.78rem", color: "#aaa" },
+  replyBarClose:  { background: "none", border: "none", color: "#666", fontSize: "1rem", cursor: "pointer" },
+  inputRow:       { display: "flex", gap: "8px", padding: "12px 16px", background: "#1a1a1a", borderTop: "1px solid #2a2a2a" },
+  input:          { flex: 1, padding: "10px 14px", background: "#111", border: "1px solid #2a2a2a", borderRadius: "8px", color: "#fff", fontSize: "0.9rem" },
+  sendBtn:        { padding: "10px 18px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "8px", cursor: "pointer", fontSize: "0.9rem" },
 };
