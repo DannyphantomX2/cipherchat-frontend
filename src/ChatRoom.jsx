@@ -109,7 +109,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     async function setupEncryption() {
       try {
         setStatus("Loading your key pair...");
-        const keyPair = await getOrCreateKeyPair(room.id);
+        const keyPair = await getOrCreateKeyPair(room.id, userId);
         myKeys.current = keyPair;
         const pubB64 = await exportPublicKey(keyPair.publicKey);
         setStatus("Publishing your public key...");

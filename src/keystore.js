@@ -1,6 +1,3 @@
-// Persists ECDH keypairs in IndexedDB keyed by roomId.
-// Same room = same keypair every session = old messages stay readable.
-
 const DB_NAME = "cipherchat-keys";
 const STORE = "keypairs";
 const VERSION = 1;
@@ -9,26 +6,25 @@ function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, VERSION);
     req.onupgradeneeded = (e) => {
-      e.target.result.createObjectStore(STORE, { keyPath: "roomId" });
+      e.target.result.createObjectStore(STORE, { keyPath: "id" });
     };
     req.onsuccess = (e) => resolve(e.target.result);
     req.onerror = (e) => reject(e.target.error);
   });
 }
 
-export async function getOrCreateKeyPair(roomId) {
+export async function getOrCreateKeyPair(roomId, userId) {
+  const id = `${roomId}-${userId}`;
   const db = await openDB();
 
-  // Try to load existing keypair for this room
   const existing = await new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readonly");
-    const req = tx.objectStore(STORE).get(roomId);
+    const req = tx.objectStore(STORE).get(id);
     req.onsuccess = (e) => resolve(e.target.result);
     req.onerror = (e) => reject(e.target.error);
   });
 
   if (existing) {
-    // Re-import the stored CryptoKey objects
     const privateKey = await crypto.subtle.importKey(
       "pkcs8",
       existing.privateKeyRaw,
@@ -46,19 +42,17 @@ export async function getOrCreateKeyPair(roomId) {
     return { privateKey, publicKey };
   }
 
-  // Generate fresh keypair and store it
   const keyPair = await crypto.subtle.generateKey(
     { name: "ECDH", namedCurve: "P-256" },
     true,
     ["deriveKey"]
   );
-
   const privateKeyRaw = await crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
   const publicKeyRaw = await crypto.subtle.exportKey("raw", keyPair.publicKey);
 
   await new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
-    const req = tx.objectStore(STORE).put({ roomId, privateKeyRaw, publicKeyRaw });
+    const req = tx.objectStore(STORE).put({ id, privateKeyRaw, publicKeyRaw });
     req.onsuccess = () => resolve();
     req.onerror = (e) => reject(e.target.error);
   });
@@ -66,11 +60,12 @@ export async function getOrCreateKeyPair(roomId) {
   return keyPair;
 }
 
-export async function clearKeyPair(roomId) {
+export async function clearKeyPair(roomId, userId) {
+  const id = `${roomId}-${userId}`;
   const db = await openDB();
   await new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
-    const req = tx.objectStore(STORE).delete(roomId);
+    const req = tx.objectStore(STORE).delete(id);
     req.onsuccess = () => resolve();
     req.onerror = (e) => reject(e.target.error);
   });
