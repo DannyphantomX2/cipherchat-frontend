@@ -258,11 +258,17 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
           );
         })}
         {typing && (
-          <div style={{ ...s.msgRow, justifyContent: "flex-start", marginTop: 3 }}>
-            <div style={{ width: 32, marginRight: 8 }} />
-            <div style={{ ...s.bubble, background: "#0d1f3c", border: "1px solid #1a2a3a", borderRadius: "16px 16px 16px 4px", padding: "10px 14px" }}>
-              <span style={{ color: "#00ff9d", fontSize: 12 }}>{typing} is typing</span>
-              <span className="typingDots" style={{ color: "#00ff9d" }}>...</span>
+          <div style={{ display: "flex", alignItems: "flex-end", marginTop: 6, marginBottom: 2 }}>
+            <div style={{ width: 32, marginRight: 8, flexShrink: 0 }}>
+              <Avatar name={typing} size={28} />
+            </div>
+            <div style={{ background: "#0d1f3c", border: "1px solid #00ff9d33", borderRadius: "16px 16px 16px 4px", padding: "8px 14px", display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ color: "#00ff9d99", fontSize: 12 }}>{typing} is typing</span>
+              <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
+                <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#00ff9d", display: "inline-block", animation: "typingBlink 1.2s infinite 0s" }} />
+                <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#00ff9d", display: "inline-block", animation: "typingBlink 1.2s infinite 0.4s" }} />
+                <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#00ff9d", display: "inline-block", animation: "typingBlink 1.2s infinite 0.8s" }} />
+              </div>
             </div>
           </div>
         )}
@@ -282,22 +288,22 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
       )}
 
       <div style={s.inputBar}>
-        <button style={s.inputIconBtn}>
+        <button type="button" style={s.inputIconBtn}>
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#556677" strokeWidth="1.8"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
         </button>
-        <form style={s.inputForm} onSubmit={handleSend}>
-          <input
-            style={{ ...s.input, opacity: ready ? 1 : 0.5 }}
-            value={input}
-            onChange={handleInputChange}
-            placeholder={ready ? "Type a message..." : "Setting up encryption..."}
-            disabled={!ready}
-          />
-        </form>
-        <button style={s.inputIconBtn}>
+        <input
+          style={{ ...s.input, flex: 1, opacity: ready ? 1 : 0.5 }}
+          value={input}
+          onChange={handleInputChange}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(e); } }}
+          placeholder={ready ? "Type a message..." : "Setting up encryption..."}
+          disabled={!ready}
+        />
+        <button type="button" style={s.inputIconBtn}>
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#556677" strokeWidth="1.8"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
         </button>
         <button
+          type="button"
           style={{ ...s.sendBtn, opacity: ready && input.trim() ? 1 : 0.4 }}
           onClick={handleSend}
           disabled={!ready || !input.trim()}
@@ -339,7 +345,7 @@ const s = {
   replyClose: { background: "none", border: "none", color: "#556677", cursor: "pointer", fontSize: 14, padding: "2px 6px" },
   inputBar: { display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "#0a1628", borderTop: "1px solid #0d2a1f" },
   inputIconBtn: { background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", padding: 4, flexShrink: 0 },
-  inputForm: { flex: 1 },
+  // inputForm removed - no longer using form wrapper
   input: { width: "100%", background: "#0d1f3c", border: "1px solid #1a2a3a", borderRadius: 24, padding: "10px 16px", color: "#fff", fontSize: 15, outline: "none", fontFamily: "Rajdhani, sans-serif" },
   sendBtn: { width: 42, height: 42, borderRadius: "50%", background: "linear-gradient(135deg, #00cc7a, #00ff9d)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 0 16px #00ff9d44", transition: "opacity 0.2s" },
 };
