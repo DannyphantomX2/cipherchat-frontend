@@ -34,5 +34,5 @@ export default function App() {
       onBack={() => setRoom(null)}
     />
   );
-  return <Lobby token={token} onSelectRoom={setRoom} onLogout={handleLogout} />;
+  return <Lobby token={token} onSelectRoom={setRoom} onLogout={handleLogout} username={user.username} />;
 }
