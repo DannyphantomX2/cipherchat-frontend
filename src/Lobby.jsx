@@ -180,7 +180,7 @@ export default function Lobby({ token, onSelectRoom, onLogout, username }) {
 
 const s = {
   root: { minHeight: "100vh", background: "#050d1a", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Rajdhani, Arial, sans-serif", position: "relative" },
-  shell: { position: "relative", zIndex: 1, width: "100%", maxWidth: "480px", minHeight: "100vh", background: "linear-gradient(180deg, #0a1628 0%, #050d1a 100%)", display: "flex", flexDirection: "column" },
+  shell: { position: "relative", zIndex: 1, width: "100%", minHeight: "100vh", background: "linear-gradient(180deg, #0a1628 0%, #050d1a 100%)", display: "flex", flexDirection: "column" },
   header: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: "1px solid #0d2a1f", background: "#0a1628" },
   headerLeft: { display: "flex", alignItems: "center", gap: 12 },
   logoWrap: { filter: "drop-shadow(0 0 8px #00ff9d88)" },

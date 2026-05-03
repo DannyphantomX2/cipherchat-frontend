@@ -292,7 +292,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
 }
 
 const s = {
-  root: { display: "flex", flexDirection: "column", height: "100vh", background: "#050d1a", fontFamily: "Rajdhani, Arial, sans-serif", maxWidth: 480, margin: "0 auto" },
+  root: { display: "flex", flexDirection: "column", height: "100vh", background: "#050d1a", fontFamily: "Rajdhani, Arial, sans-serif", width: "100%" },
   header: { display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "#0a1628", borderBottom: "1px solid #0d2a1f" },
   backBtn: { background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", padding: "4px 6px", marginRight: 2 },
   headerInfo: { flex: 1 },
