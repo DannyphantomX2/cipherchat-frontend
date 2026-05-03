@@ -5,77 +5,86 @@ import { exportPublicKey, importPublicKey, deriveSharedKey, encryptMessage, decr
 import { getOrCreateKeyPair } from "./keystore";
 
 function formatTime(iso) {
-  const normalized = iso.endsWith("Z") ? iso : iso + "Z";
-  return new Date(normalized).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const d = new Date(iso);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function Avatar({ name, size = 36 }) {
+  const colors = ["#00cc7a", "#0088ff", "#aa44ff", "#ff6644", "#ffaa00"];
+  const color = colors[name.charCodeAt(0) % colors.length];
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: "50%",
+      background: `linear-gradient(135deg, ${color}33, ${color}88)`,
+      border: `1.5px solid ${color}66`,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontSize: size * 0.38, fontWeight: 700, color, flexShrink: 0,
+      fontFamily: "Orbitron, sans-serif", boxShadow: `0 0 10px ${color}33`
+    }}>
+      {name[0].toUpperCase()}
+    </div>
+  );
 }
 
 export default function ChatRoom({ room, token, userId, username, onBack }) {
-  const [messages, setMessages]     = useState([]);
-  const [input, setInput]           = useState("");
-  const [status, setStatus]         = useState("Setting up encryption...");
-  const [ready, setReady]           = useState(false);
-  const [replyTo, setReplyTo]       = useState(null);
-  const [typingUser, setTypingUser] = useState(null);
-  const bottomRef    = useRef(null);
-  const myKeys       = useRef(null);
-  const sharedKeys   = useRef({});
-  const usernameMap  = useRef({});
-  const touchStart   = useRef(null);
-  const pollInterval = useRef(null);
-  const typingTimer  = useRef(null);
-  const sentMsgIds   = useRef(new Set());
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [status, setStatus] = useState("Setting up encryption...");
+  const [ready, setReady] = useState(false);
+  const [replyTo, setReplyTo] = useState(null);
+  const [typing, setTyping] = useState(null);
+  const bottomRef = useRef(null);
+  const myKeys = useRef(null);
+  const sharedKeys = useRef({});
+  const usernameMap = useRef({});
+  const touchStart = useRef(null);
+  const typingTimer = useRef(null);
 
   async function refreshSharedKeys() {
-    if (!myKeys.current) return 0;
-    let keys = [];
-    try {
-      keys = await getRoomKeys(room.id, token);
-    } catch (e) {
-      console.error("getRoomKeys failed:", e);
-      return 0;
-    }
-    if (!Array.isArray(keys)) return 0;
+    if (!myKeys.current) return;
+    const keys = await getRoomKeys(token, room.id);
     for (const entry of keys) {
       usernameMap.current[entry.user_id] = entry.username;
-      if (Number(entry.user_id) === Number(userId)) continue;
-      if (sharedKeys.current[entry.user_id]) continue;
-      try {
-        const theirPub = await importPublicKey(entry.public_key);
-        sharedKeys.current[entry.user_id] = await deriveSharedKey(myKeys.current.privateKey, theirPub);
-      } catch (e) {
-        console.error("key derivation failed:", e);
-      }
+      if (entry.user_id === userId || sharedKeys.current[entry.user_id]) continue;
+      const theirPub = await importPublicKey(entry.public_key);
+      sharedKeys.current[entry.user_id] = await deriveSharedKey(myKeys.current.privateKey, theirPub);
     }
-    return Object.keys(sharedKeys.current).length;
+  }
+
+  async function setupEncryption() {
+    setStatus("Loading your key pair...");
+    const keyPair = await getOrCreateKeyPair(room.id);
+    myKeys.current = keyPair;
+    const pubB64 = await exportPublicKey(keyPair.publicKey);
+    setStatus("Publishing your public key...");
+    await publishKey(token, room.id, pubB64);
+    await refreshSharedKeys();
+    setStatus("Encrypted channel ready");
+    setReady(true);
   }
 
   async function tryDecrypt(recipients, senderId) {
     if (!recipients) return "[no content]";
     if (recipients.solo) {
-      try { return decodeURIComponent(escape(atob(recipients.solo.ciphertext))); }
-      catch { return "[solo decrypt failed]"; }
+      try { return atob(recipients.solo.ciphertext); } catch { return "[solo decrypt failed]"; }
     }
     const mySlice = recipients[String(userId)];
     if (!mySlice) return "[message sent before you joined]";
     let keyToUse;
-    if (Number(senderId) === Number(userId)) {
+    if (senderId === userId) {
       keyToUse = Object.values(sharedKeys.current)[0];
     } else {
       if (!sharedKeys.current[senderId]) await refreshSharedKeys();
       keyToUse = sharedKeys.current[senderId];
     }
     if (!keyToUse) return "[key not available]";
-    try {
-      return await decryptMessage(keyToUse, mySlice.ciphertext, mySlice.iv);
-    } catch {
-      return "[decrypt failed]";
-    }
+    try { return await decryptMessage(keyToUse, mySlice.ciphertext, mySlice.iv); }
+    catch { return "[decrypt failed]"; }
   }
 
-  async function loadMessages() {
-    try {
+  useEffect(() => {
+    setupEncryption().then(async () => {
       const msgs = await getMessages(token, room.id);
-      if (!Array.isArray(msgs)) return;
       const reversed = [...msgs].reverse();
       const decoded = await Promise.all(
         reversed.map(async (msg) => ({
@@ -85,69 +94,16 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
         }))
       );
       setMessages(decoded);
-    } catch (e) {
-      console.error("loadMessages failed:", e);
-    }
-  }
-
-  useEffect(() => {
-    async function setupEncryption() {
-      try {
-        setStatus("Loading your key pair...");
-        const keyPair = await getOrCreateKeyPair(room.id);
-        myKeys.current = keyPair;
-        const pubB64 = await exportPublicKey(keyPair.publicKey);
-        setStatus("Publishing your public key...");
-        await publishKey(token, room.id, pubB64);
-        const peerCount = await refreshSharedKeys();
-        if (peerCount > 0) {
-          setStatus("Encrypted channel ready ✓");
-          setReady(true);
-          await loadMessages();
-        } else {
-          setStatus("Waiting for someone to join...");
-          pollInterval.current = setInterval(async () => {
-            const count = await refreshSharedKeys();
-            if (count > 0) {
-              clearInterval(pollInterval.current);
-              setStatus("Encrypted channel ready ✓");
-              setReady(true);
-              await loadMessages();
-            }
-          }, 3000);
-        }
-      } catch (e) {
-        console.error("setupEncryption failed:", e);
-        setStatus("Encryption setup failed: " + e.message);
-      }
-    }
-    setupEncryption();
-    return () => { if (pollInterval.current) clearInterval(pollInterval.current); };
+    });
   }, [room.id]);
 
   const handleIncoming = useCallback(async (msg) => {
-    // Typing indicator
-    if (msg.type === "typing") {
-      setTypingUser(msg.username);
-      if (typingTimer.current) clearTimeout(typingTimer.current);
-      typingTimer.current = setTimeout(() => setTypingUser(null), 3000);
+    if (msg._typing) {
+      setTyping(msg._typing === "stop" ? null : msg._username);
+      clearTimeout(typingTimer.current);
+      if (msg._typing !== "stop") typingTimer.current = setTimeout(() => setTyping(null), 3000);
       return;
     }
-
-    // Skip echo of our own messages — we track by DB id
-    if (Number(msg.sender_id) === Number(userId)) {
-      // Update optimistic bubble with real DB id
-      setMessages(prev => {
-        const idx = prev.findIndex(m => m.id === null && Number(m.sender_id) === Number(userId) && !sentMsgIds.current.has(m._temp_id));
-        if (idx === -1) return prev;
-        const next = [...prev];
-        sentMsgIds.current.add(next[idx]._temp_id);
-        next[idx] = { ...next[idx], id: msg.id };
-        return next;
-      });
-      return;
-    }
-
     await refreshSharedKeys();
     const text = await tryDecrypt(msg.recipients, msg.sender_id);
     setMessages(prev => [...prev, {
@@ -155,18 +111,13 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
       _plaintext: text,
       _username: usernameMap.current[msg.sender_id] ?? "user" + msg.sender_id
     }]);
-  }, [userId]);
+  }, []);
 
-  const { send, sendTyping } = useWebSocket(room.id, token, handleIncoming);
+  const { send } = useWebSocket(room.id, token, handleIncoming);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, typingUser]);
-
-  function handleInputChange(e) {
-    setInput(e.target.value);
-    sendTyping(username);
-  }
+  }, [messages]);
 
   async function handleSend(e) {
     e.preventDefault();
@@ -174,23 +125,12 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     const text = input.trim();
     setInput("");
     const peers = Object.entries(sharedKeys.current);
-    const replyId = replyTo ? replyTo.id : null;
+    const payload = { reply_to_id: replyTo ? replyTo.id : null };
     setReplyTo(null);
-
-    const tempId = Date.now() + Math.random();
-
     if (peers.length === 0) {
-      const ciphertext = btoa(unescape(encodeURIComponent(text)));
-      setMessages(prev => [...prev, {
-        id: null, _temp_id: tempId, sender_id: userId,
-        recipients: { solo: { ciphertext, iv: "none" } },
-        _plaintext: text, _username: username,
-        created_at: new Date().toISOString(), reply_to_id: replyId,
-      }]);
-      send({ reply_to_id: replyId, recipients: { solo: { ciphertext, iv: "none" } } });
+      send({ ...payload, recipients: { solo: { ciphertext: btoa(text), iv: "none" } } });
       return;
     }
-
     const recipients = {};
     for (const [peerId, sharedKey] of peers) {
       const { ciphertext, iv } = await encryptMessage(sharedKey, text);
@@ -198,152 +138,199 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     }
     const { ciphertext: selfCt, iv: selfIv } = await encryptMessage(peers[0][1], text);
     recipients[String(userId)] = { ciphertext: selfCt, iv: selfIv };
-
-    setMessages(prev => [...prev, {
-      id: null, _temp_id: tempId, sender_id: userId,
-      recipients,
-      _plaintext: text, _username: username,
-      created_at: new Date().toISOString(), reply_to_id: replyId,
-    }]);
-
-    send({ reply_to_id: replyId, recipients });
+    send({ ...payload, recipients });
   }
 
-  function onTouchStart(e) {
-    touchStart.current = e.touches[0].clientX;
-  }
-
+  function onTouchStart(e) { touchStart.current = e.touches[0].clientX; }
   function onTouchEnd(e, msg) {
     if (touchStart.current === null) return;
     const diff = e.changedTouches[0].clientX - touchStart.current;
     if (diff > 60) setReplyTo({ id: msg.id, plaintext: msg._plaintext, username: msg._username });
     touchStart.current = null;
   }
-
-  function onDoubleClick(msg) {
+  function onDblClick(msg) {
     setReplyTo({ id: msg.id, plaintext: msg._plaintext, username: msg._username });
   }
 
-  function getReplyPreview(replyToId, allMessages) {
-    const original = allMessages.find(m => m.id === replyToId);
+  function getReplyPreview(replyToId) {
+    const original = messages.find(m => m.id === replyToId);
     return original ? { text: original._plaintext, username: original._username } : null;
   }
 
+  const isOnline = true;
+
   return (
-    <div style={styles.container}>
-      <div style={styles.header}>
-        <button style={styles.back} onClick={onBack}>←</button>
-        <div style={styles.headerCenter}>
-          <span style={styles.roomName}>{room.name}</span>
-          <span style={styles.statusLine}>{status}</span>
+    <div style={s.root}>
+      <style>{css}</style>
+
+      <div style={s.header}>
+        <button style={s.backBtn} onClick={onBack}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#00ff9d" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <Avatar name={room.name} size={40} />
+        <div style={s.headerInfo}>
+          <div style={s.headerName}>{room.name}</div>
+          <div style={s.headerStatus}>
+            <span style={s.statusDot}/>
+            <span style={s.statusText}>{status === "Encrypted channel ready" ? "Online · Encrypted" : status}</span>
+          </div>
         </div>
-        <span style={styles.code}>Invite: {room.invite_code}</span>
+        <div style={s.headerActions}>
+          <button style={s.iconBtn} title="Invite code">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8899aa" strokeWidth="1.8"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          </button>
+          <div style={s.inviteChip}>{room.invite_code}</div>
+        </div>
       </div>
 
-      <div style={styles.messages}>
+      <div style={s.encryptBanner}>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#00ff9d" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <span>Messages and calls are end-to-end encrypted. Only you and recipients can read them.</span>
+      </div>
+
+      <div style={s.messages}>
         {messages.map((msg, i) => {
-          const mine = Number(msg.sender_id) === Number(userId);
-          const replyPreview = msg.reply_to_id ? getReplyPreview(msg.reply_to_id, messages) : null;
+          const mine = msg.sender_id === userId;
+          const replyPreview = msg.reply_to_id ? getReplyPreview(msg.reply_to_id) : null;
+          const prevMsg = messages[i - 1];
+          const showAvatar = !mine && (!prevMsg || prevMsg.sender_id !== msg.sender_id);
           return (
             <div
-              key={msg.id ?? msg._temp_id ?? i}
-              style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start" }}
+              key={msg.id ?? i}
+              style={{ ...s.msgRow, justifyContent: mine ? "flex-end" : "flex-start", marginTop: showAvatar ? 10 : 3 }}
               onTouchStart={onTouchStart}
               onTouchEnd={(e) => onTouchEnd(e, msg)}
-              onDoubleClick={() => onDoubleClick(msg)}
+              onDoubleClick={() => onDblClick(msg)}
             >
-              <span style={styles.msgMeta}>
-                {!mine && <span style={styles.msgUsername}>{msg._username} · </span>}
-                <span style={styles.msgTime}>{msg.created_at ? formatTime(msg.created_at) : ""}</span>
-              </span>
-              <div style={{ ...styles.bubble, background: mine ? "#7c3aed" : "#1e1e1e" }}>
-                {replyPreview && (
-                  <div style={styles.replyQuote}>
-                    <span style={styles.replyQuoteUser}>{replyPreview.username}</span>
-                    <span style={styles.replyQuoteText}>
-                      {replyPreview.text ? replyPreview.text.slice(0, 60) : ""}
-                      {replyPreview.text && replyPreview.text.length > 60 ? "..." : ""}
-                    </span>
+              {!mine && (
+                <div style={{ width: 32, marginRight: 8, flexShrink: 0, alignSelf: "flex-end" }}>
+                  {showAvatar && <Avatar name={msg._username} size={30} />}
+                </div>
+              )}
+              <div style={{ maxWidth: "72%", display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start" }}>
+                {showAvatar && !mine && <span style={s.senderName}>{msg._username}</span>}
+                <div style={{
+                  ...s.bubble,
+                  background: mine ? "linear-gradient(135deg, #005c3d, #007a52)" : "#0d1f3c",
+                  borderRadius: mine ? "16px 16px 4px 16px" : "16px 16px 16px 4px",
+                  border: mine ? "1px solid #00ff9d33" : "1px solid #1a2a3a",
+                  boxShadow: mine ? "0 2px 12px #00ff9d1a" : "0 2px 8px #00000033",
+                }}>
+                  {replyPreview && (
+                    <div style={s.replyQuote}>
+                      <span style={s.replyQuoteUser}>{replyPreview.username}</span>
+                      <span style={s.replyQuoteText}>{replyPreview.text ? replyPreview.text.slice(0, 60) : ""}
+                        {replyPreview.text && replyPreview.text.length > 60 ? "..." : ""}
+                      </span>
+                    </div>
+                  )}
+                  <span style={s.bubbleText}>{msg._plaintext ?? "..."}</span>
+                  <div style={s.bubbleMeta}>
+                    <span style={s.bubbleTime}>{msg.created_at ? formatTime(msg.created_at) : ""}</span>
+                    {mine && (
+                      <svg width="14" height="10" viewBox="0 0 16 10" fill="none" style={{ marginLeft: 3 }}>
+                        <path d="M1 5l3 3 7-7" stroke="#00ff9d" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M6 5l3 3 7-7" stroke="#00ff9d88" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    )}
                   </div>
-                )}
-                {msg._plaintext ?? "..."}
+                </div>
               </div>
             </div>
           );
         })}
-
-        {/* Typing indicator */}
-        {typingUser && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
-            <div style={styles.typingBubble}>
-              <span style={styles.typingName}>{typingUser}</span>
-              <span style={styles.typingDots}>
-                <span style={styles.dot} />
-                <span style={styles.dot} />
-                <span style={styles.dot} />
-              </span>
+        {typing && (
+          <div style={{ ...s.msgRow, justifyContent: "flex-start", marginTop: 3 }}>
+            <div style={{ width: 32, marginRight: 8 }} />
+            <div style={{ ...s.bubble, background: "#0d1f3c", border: "1px solid #1a2a3a", borderRadius: "16px 16px 16px 4px", padding: "10px 14px" }}>
+              <span style={{ color: "#00ff9d", fontSize: 12 }}>{typing} is typing</span>
+              <span className="typingDots" style={{ color: "#00ff9d" }}>...</span>
             </div>
           </div>
         )}
-
         <div ref={bottomRef} />
       </div>
 
       {replyTo && (
-        <div style={styles.replyBar}>
-          <div style={styles.replyBarContent}>
-            <span style={styles.replyBarLabel}>Replying to {replyTo.username}</span>
-            <span style={styles.replyBarText}>
-              {replyTo.plaintext ? replyTo.plaintext.slice(0, 60) : ""}
+        <div style={s.replyBar}>
+          <div style={s.replyBarContent}>
+            <span style={s.replyBarLabel}>Replying to {replyTo.username}</span>
+            <span style={s.replyBarText}>{replyTo.plaintext ? replyTo.plaintext.slice(0, 60) : ""}
               {replyTo.plaintext && replyTo.plaintext.length > 60 ? "..." : ""}
             </span>
           </div>
-          <button style={styles.replyBarClose} onClick={() => setReplyTo(null)}>✕</button>
+          <button style={s.replyClose} onClick={() => setReplyTo(null)}>✕</button>
         </div>
       )}
 
-      <form style={styles.inputRow} onSubmit={handleSend}>
-        <input
-          style={{ ...styles.input, opacity: ready ? 1 : 0.5 }}
-          value={input}
-          onChange={handleInputChange}
-          placeholder={ready ? "Type a message..." : status}
-          disabled={!ready}
-        />
-        <button style={{ ...styles.sendBtn, opacity: ready ? 1 : 0.5 }} type="submit" disabled={!ready}>
-          Send
+      <div style={s.inputBar}>
+        <button style={s.inputIconBtn}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#556677" strokeWidth="1.8"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
         </button>
-      </form>
+        <form style={s.inputForm} onSubmit={handleSend}>
+          <input
+            style={{ ...s.input, opacity: ready ? 1 : 0.5 }}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            placeholder={ready ? "Type a message..." : "Setting up encryption..."}
+            disabled={!ready}
+          />
+        </form>
+        <button style={s.inputIconBtn}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#556677" strokeWidth="1.8"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        </button>
+        <button
+          style={{ ...s.sendBtn, opacity: ready && input.trim() ? 1 : 0.4 }}
+          onClick={handleSend}
+          disabled={!ready || !input.trim()}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M22 2L11 13" stroke="#050d1a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M22 2L15 22 11 13 2 9l20-7z" stroke="#050d1a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </button>
+      </div>
     </div>
   );
 }
 
-const styles = {
-  container:       { display: "flex", flexDirection: "column", height: "100vh", background: "#0f0f0f", color: "#fff" },
-  header:          { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: "#1a1a1a", borderBottom: "1px solid #2a2a2a", gap: "12px" },
-  back:            { background: "none", border: "none", color: "#aaa", fontSize: "1.2rem", cursor: "pointer", padding: "4px 8px" },
-  headerCenter:    { display: "flex", flexDirection: "column", alignItems: "center", flex: 1 },
-  roomName:        { color: "#fff", fontWeight: 600, fontSize: "0.95rem" },
-  statusLine:      { color: "#22c55e", fontSize: "0.72rem", marginTop: "2px" },
-  code:            { color: "#555", fontSize: "0.72rem", whiteSpace: "nowrap" },
-  messages:        { flex: 1, overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: "8px" },
-  msgMeta:         { fontSize: "0.72rem", color: "#555", marginBottom: "2px", paddingLeft: "4px", paddingRight: "4px" },
-  msgUsername:     { color: "#7c3aed" },
-  msgTime:         { color: "#444" },
-  bubble:          { maxWidth: "70vw", padding: "10px 14px", borderRadius: "16px", fontSize: "0.9rem", lineHeight: 1.5, wordBreak: "break-word", cursor: "pointer" },
-  replyQuote:      { borderLeft: "3px solid rgba(255,255,255,0.4)", paddingLeft: "8px", marginBottom: "6px", display: "flex", flexDirection: "column", gap: "2px" },
-  replyQuoteUser:  { fontSize: "0.72rem", color: "rgba(255,255,255,0.7)", fontWeight: 600 },
-  replyQuoteText:  { fontSize: "0.78rem", color: "rgba(255,255,255,0.5)" },
-  replyBar:        { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 16px", background: "#1a1a1a", borderTop: "1px solid #2a2a2a" },
-  replyBarContent: { display: "flex", flexDirection: "column", gap: "2px" },
-  replyBarLabel:   { fontSize: "0.75rem", color: "#7c3aed", fontWeight: 600 },
-  replyBarText:    { fontSize: "0.78rem", color: "#aaa" },
-  replyBarClose:   { background: "none", border: "none", color: "#666", fontSize: "1rem", cursor: "pointer" },
-  inputRow:        { display: "flex", gap: "8px", padding: "12px 16px", background: "#1a1a1a", borderTop: "1px solid #2a2a2a" },
-  input:           { flex: 1, padding: "10px 14px", background: "#111", border: "1px solid #2a2a2a", borderRadius: "8px", color: "#fff", fontSize: "0.9rem" },
-  sendBtn:         { padding: "10px 18px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: "8px", cursor: "pointer", fontSize: "0.9rem" },
-  typingBubble:    { display: "flex", alignItems: "center", gap: "8px", background: "#1e1e1e", padding: "8px 14px", borderRadius: "16px", fontSize: "0.82rem" },
-  typingName:      { color: "#7c3aed", fontWeight: 600 },
-  typingDots:      { display: "flex", gap: "3px", alignItems: "center" },
-  dot:             { width: "6px", height: "6px", borderRadius: "50%", background: "#666", display: "inline-block", animation: "bounce 1.2s infinite" },
+const s = {
+  root: { display: "flex", flexDirection: "column", height: "100vh", background: "#050d1a", fontFamily: "Rajdhani, Arial, sans-serif", maxWidth: 480, margin: "0 auto" },
+  header: { display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "#0a1628", borderBottom: "1px solid #0d2a1f" },
+  backBtn: { background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", padding: "4px 6px", marginRight: 2 },
+  headerInfo: { flex: 1 },
+  headerName: { fontSize: 16, fontWeight: 700, color: "#fff", fontFamily: "Rajdhani, sans-serif" },
+  headerStatus: { display: "flex", alignItems: "center", gap: 5, marginTop: 1 },
+  statusDot: { width: 7, height: 7, borderRadius: "50%", background: "#00ff9d", boxShadow: "0 0 6px #00ff9d", flexShrink: 0 },
+  statusText: { fontSize: 11, color: "#00ff9d" },
+  headerActions: { display: "flex", alignItems: "center", gap: 8 },
+  iconBtn: { background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", padding: 4 },
+  inviteChip: { background: "#0d2a1f", border: "1px solid #00ff9d33", borderRadius: 6, padding: "3px 8px", fontSize: 10, color: "#00ff9d88", fontFamily: "monospace" },
+  encryptBanner: { display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", background: "#050d1a", borderBottom: "1px solid #0a1628", fontSize: 11, color: "#334455", justifyContent: "center" },
+  messages: { flex: 1, overflowY: "auto", padding: "12px 14px", display: "flex", flexDirection: "column" },
+  msgRow: { display: "flex", alignItems: "flex-end", width: "100%" },
+  senderName: { fontSize: 11, color: "#00ff9d88", marginBottom: 3, paddingLeft: 2 },
+  bubble: { padding: "10px 13px", wordBreak: "break-word", position: "relative" },
+  bubbleText: { fontSize: 15, color: "#e8f4f0", lineHeight: 1.4, display: "block" },
+  bubbleMeta: { display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 2, marginTop: 4 },
+  bubbleTime: { fontSize: 10, color: "#445566" },
+  replyQuote: { borderLeft: "3px solid #00ff9d88", paddingLeft: 8, marginBottom: 7, opacity: 0.85 },
+  replyQuoteUser: { display: "block", fontSize: 10, color: "#00ff9d", fontWeight: 700, marginBottom: 2 },
+  replyQuoteText: { display: "block", fontSize: 11, color: "#8899aa" },
+  replyBar: { display: "flex", alignItems: "center", background: "#0a1628", borderTop: "1px solid #0d2a1f", padding: "8px 14px", gap: 8 },
+  replyBarContent: { flex: 1, borderLeft: "3px solid #00ff9d", paddingLeft: 10 },
+  replyBarLabel: { display: "block", fontSize: 11, color: "#00ff9d", fontWeight: 700 },
+  replyBarText: { display: "block", fontSize: 12, color: "#556677", marginTop: 2 },
+  replyClose: { background: "none", border: "none", color: "#556677", cursor: "pointer", fontSize: 14, padding: "2px 6px" },
+  inputBar: { display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "#0a1628", borderTop: "1px solid #0d2a1f" },
+  inputIconBtn: { background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", padding: 4, flexShrink: 0 },
+  inputForm: { flex: 1 },
+  input: { width: "100%", background: "#0d1f3c", border: "1px solid #1a2a3a", borderRadius: 24, padding: "10px 16px", color: "#fff", fontSize: 15, outline: "none", fontFamily: "Rajdhani, sans-serif" },
+  sendBtn: { width: 42, height: 42, borderRadius: "50%", background: "linear-gradient(135deg, #00cc7a, #00ff9d)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 0 16px #00ff9d44", transition: "opacity 0.2s" },
 };
+
+const css = `
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Rajdhani:wght@400;600;700&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  input::placeholder { color: #334455; }
+  ::-webkit-scrollbar { width: 3px; } ::-webkit-scrollbar-thumb { background: #00ff9d22; }
+  @keyframes typingBlink { 0%,100%{opacity:0.3} 50%{opacity:1} }
+  .typingDots { animation: typingBlink 1.2s infinite; }
+`;
