@@ -5,8 +5,8 @@ import { exportPublicKey, importPublicKey, deriveSharedKey, encryptMessage, decr
 import { getOrCreateKeyPair } from "./keystore";
 
 function formatTime(iso) {
-  const d = new Date(iso);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const normalized = iso.endsWith("Z") ? iso : iso + "Z";
+  return new Date(normalized).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function Avatar({ name, size = 36 }) {
@@ -27,59 +27,56 @@ function Avatar({ name, size = 36 }) {
 }
 
 export default function ChatRoom({ room, token, userId, username, onBack }) {
-  const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState("");
-  const [status, setStatus] = useState("Setting up encryption...");
-  const [ready, setReady] = useState(false);
-  const [replyTo, setReplyTo] = useState(null);
-  const [typing, setTyping] = useState(null);
-  const bottomRef = useRef(null);
-  const myKeys = useRef(null);
-  const sharedKeys = useRef({});
-  const usernameMap = useRef({});
-  const touchStart = useRef(null);
-  const typingTimer = useRef(null);
+  const [messages, setMessages]   = useState([]);
+  const [input, setInput]         = useState("");
+  const [status, setStatus]       = useState("Setting up encryption...");
+  const [ready, setReady]         = useState(false);
+  const [replyTo, setReplyTo]     = useState(null);
+  const [typing, setTyping]       = useState(null);
+  const bottomRef    = useRef(null);
+  const myKeys       = useRef(null);
+  const sharedKeys   = useRef({});
+  const usernameMap  = useRef({});
+  const touchStart   = useRef(null);
+  const typingTimer  = useRef(null);
+  const pollInterval = useRef(null);
+  const sentIds      = useRef(new Set());
 
   async function refreshSharedKeys() {
-    if (!myKeys.current) return;
-    const keys = await getRoomKeys(token, room.id);
+    if (!myKeys.current) return 0;
+    let keys = [];
+    try {
+      // FIXED: correct arg order (roomId, token)
+      keys = await getRoomKeys(room.id, token);
+    } catch (e) {
+      console.error("getRoomKeys failed:", e);
+      return 0;
+    }
+    if (!Array.isArray(keys)) return 0;
     for (const entry of keys) {
       usernameMap.current[entry.user_id] = entry.username;
-      if (entry.user_id === userId || sharedKeys.current[entry.user_id]) continue;
-      const theirPub = await importPublicKey(entry.public_key);
-      sharedKeys.current[entry.user_id] = await deriveSharedKey(myKeys.current.privateKey, theirPub);
+      if (Number(entry.user_id) === Number(userId)) continue;
+      if (sharedKeys.current[entry.user_id]) continue;
+      try {
+        const theirPub = await importPublicKey(entry.public_key);
+        sharedKeys.current[entry.user_id] = await deriveSharedKey(myKeys.current.privateKey, theirPub);
+      } catch (e) {
+        console.error("key derivation failed:", e);
+      }
     }
+    return Object.keys(sharedKeys.current).length;
   }
-
-  async function setupEncryption() {
-    setStatus("Loading your key pair...");
-    const keyPair = await getOrCreateKeyPair(room.id);
-    myKeys.current = keyPair;
-    const pubB64 = await exportPublicKey(keyPair.publicKey);
-    setStatus("Publishing your public key...");
-    await publishKey(token, room.id, pubB64);
-    await refreshSharedKeys();
-    setStatus("Encrypted channel ready");
-    setReady(true);
-  }
-
-  // Poll for new peers joining the room every 5 seconds
-  useEffect(() => {
-    const interval = setInterval(() => {
-      refreshSharedKeys();
-    }, 5000);
-    return () => clearInterval(interval);
-  }, []);
 
   async function tryDecrypt(recipients, senderId) {
     if (!recipients) return "[no content]";
     if (recipients.solo) {
-      try { return atob(recipients.solo.ciphertext); } catch { return "[solo decrypt failed]"; }
+      try { return decodeURIComponent(escape(atob(recipients.solo.ciphertext))); }
+      catch { return "[solo decrypt failed]"; }
     }
     const mySlice = recipients[String(userId)];
     if (!mySlice) return "[message sent before you joined]";
     let keyToUse;
-    if (senderId === userId) {
+    if (Number(senderId) === Number(userId)) {
       keyToUse = Object.values(sharedKeys.current)[0];
     } else {
       if (!sharedKeys.current[senderId]) await refreshSharedKeys();
@@ -90,9 +87,10 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     catch { return "[decrypt failed]"; }
   }
 
-  useEffect(() => {
-    setupEncryption().then(async () => {
+  async function loadMessages() {
+    try {
       const msgs = await getMessages(token, room.id);
+      if (!Array.isArray(msgs)) return;
       const reversed = [...msgs].reverse();
       const decoded = await Promise.all(
         reversed.map(async (msg) => ({
@@ -102,16 +100,70 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
         }))
       );
       setMessages(decoded);
-    });
+    } catch (e) {
+      console.error("loadMessages failed:", e);
+    }
+  }
+
+  useEffect(() => {
+    async function setupEncryption() {
+      try {
+        setStatus("Loading your key pair...");
+        const keyPair = await getOrCreateKeyPair(room.id);
+        myKeys.current = keyPair;
+        const pubB64 = await exportPublicKey(keyPair.publicKey);
+        setStatus("Publishing your public key...");
+        await publishKey(token, room.id, pubB64);
+        const peerCount = await refreshSharedKeys();
+        if (peerCount > 0) {
+          setStatus("Encrypted channel ready");
+          setReady(true);
+          await loadMessages();
+        } else {
+          setStatus("Waiting for someone to join...");
+          pollInterval.current = setInterval(async () => {
+            const count = await refreshSharedKeys();
+            if (count > 0) {
+              clearInterval(pollInterval.current);
+              setStatus("Encrypted channel ready");
+              setReady(true);
+              await loadMessages();
+            }
+          }, 3000);
+        }
+      } catch (e) {
+        console.error("setupEncryption failed:", e);
+        setStatus("Setup failed: " + e.message);
+      }
+    }
+    setupEncryption();
+    return () => { if (pollInterval.current) clearInterval(pollInterval.current); };
   }, [room.id]);
 
   const handleIncoming = useCallback(async (msg) => {
-    if (msg._typing) {
-      setTyping(msg._typing === "stop" ? null : msg._username);
+    // FIXED: typing indicator uses type field matching websocket.py
+    if (msg.type === "typing") {
+      setTyping(msg.username);
       clearTimeout(typingTimer.current);
-      if (msg._typing !== "stop") typingTimer.current = setTimeout(() => setTyping(null), 3000);
+      typingTimer.current = setTimeout(() => setTyping(null), 3000);
       return;
     }
+
+    if (msg.type !== "message") return;
+
+    // Skip echo of our own messages
+    if (Number(msg.sender_id) === Number(userId)) {
+      setMessages(prev => {
+        const idx = prev.findIndex(m => m.id === null && sentIds.current.has(m._temp_id));
+        if (idx === -1) return prev;
+        const next = [...prev];
+        sentIds.current.delete(next[idx]._temp_id);
+        next[idx] = { ...next[idx], id: msg.id };
+        return next;
+      });
+      return;
+    }
+
     await refreshSharedKeys();
     const text = await tryDecrypt(msg.recipients, msg.sender_id);
     setMessages(prev => [...prev, {
@@ -119,36 +171,44 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
       _plaintext: text,
       _username: usernameMap.current[msg.sender_id] ?? "user" + msg.sender_id
     }]);
-  }, []);
+  }, [userId]);
 
-  const { send } = useWebSocket(room.id, token, handleIncoming);
+  const { send, sendTyping } = useWebSocket(room.id, token, handleIncoming);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, typing]);
 
   function handleInputChange(e) {
     setInput(e.target.value);
-    if (e.target.value.trim()) {
-      send({ _typing: "typing" });
-    } else {
-      send({ _typing: "stop" });
-    }
-  }
-
-  async function handleSend(e) {
-    e.preventDefault();
+    // FIXED: use sendTyping with username
+    sendTyping(username);
+ }
+	async function handleSend(e) {
+    if (e && e.preventDefault) e.preventDefault();
     if (!input.trim() || !ready) return;
     const text = input.trim();
     setInput("");
-    send({ _typing: "stop" });
+
     const peers = Object.entries(sharedKeys.current);
-    const payload = { reply_to_id: replyTo ? replyTo.id : null };
+    const replyId = replyTo ? replyTo.id : null;
     setReplyTo(null);
+
+    const tempId = Date.now() + Math.random();
+    sentIds.current.add(tempId);
+
     if (peers.length === 0) {
-      send({ ...payload, recipients: { solo: { ciphertext: btoa(text), iv: "none" } } });
+      const ciphertext = btoa(unescape(encodeURIComponent(text)));
+      setMessages(prev => [...prev, {
+        id: null, _temp_id: tempId, sender_id: userId,
+        recipients: { solo: { ciphertext, iv: "none" } },
+        _plaintext: text, _username: username,
+        created_at: new Date().toISOString(), reply_to_id: replyId,
+      }]);
+      send({ reply_to_id: replyId, recipients: { solo: { ciphertext, iv: "none" } } });
       return;
     }
+
     const recipients = {};
     for (const [peerId, sharedKey] of peers) {
       const { ciphertext, iv } = await encryptMessage(sharedKey, text);
@@ -156,7 +216,15 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     }
     const { ciphertext: selfCt, iv: selfIv } = await encryptMessage(peers[0][1], text);
     recipients[String(userId)] = { ciphertext: selfCt, iv: selfIv };
-    send({ ...payload, recipients });
+
+    setMessages(prev => [...prev, {
+      id: null, _temp_id: tempId, sender_id: userId,
+      recipients,
+      _plaintext: text, _username: username,
+      created_at: new Date().toISOString(), reply_to_id: replyId,
+    }]);
+
+    send({ reply_to_id: replyId, recipients });
   }
 
   function onTouchStart(e) { touchStart.current = e.touches[0].clientX; }
@@ -175,8 +243,6 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     return original ? { text: original._plaintext, username: original._username } : null;
   }
 
-  const isOnline = true;
-
   return (
     <div style={s.root}>
       <style>{css}</style>
@@ -194,27 +260,24 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
           </div>
         </div>
         <div style={s.headerActions}>
-          <button style={s.iconBtn} title="Invite code">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8899aa" strokeWidth="1.8"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-          </button>
           <div style={s.inviteChip}>{room.invite_code}</div>
         </div>
       </div>
 
       <div style={s.encryptBanner}>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#00ff9d" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        <span>Messages and calls are end-to-end encrypted. Only you and recipients can read them.</span>
+        <span>Messages are end-to-end encrypted. Only you and recipients can read them.</span>
       </div>
 
       <div style={s.messages}>
         {messages.map((msg, i) => {
-          const mine = msg.sender_id === userId;
+          const mine = Number(msg.sender_id) === Number(userId);
           const replyPreview = msg.reply_to_id ? getReplyPreview(msg.reply_to_id) : null;
           const prevMsg = messages[i - 1];
           const showAvatar = !mine && (!prevMsg || prevMsg.sender_id !== msg.sender_id);
           return (
             <div
-              key={msg.id ?? i}
+              key={msg.id ?? msg._temp_id ?? i}
               style={{ ...s.msgRow, justifyContent: mine ? "flex-end" : "flex-start", marginTop: showAvatar ? 10 : 3 }}
               onTouchStart={onTouchStart}
               onTouchEnd={(e) => onTouchEnd(e, msg)}
@@ -237,7 +300,8 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
                   {replyPreview && (
                     <div style={s.replyQuote}>
                       <span style={s.replyQuoteUser}>{replyPreview.username}</span>
-                      <span style={s.replyQuoteText}>{replyPreview.text ? replyPreview.text.slice(0, 60) : ""}
+                      <span style={s.replyQuoteText}>
+                        {replyPreview.text ? replyPreview.text.slice(0, 60) : ""}
                         {replyPreview.text && replyPreview.text.length > 60 ? "..." : ""}
                       </span>
                     </div>
@@ -257,13 +321,14 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
             </div>
           );
         })}
+
         {typing && (
           <div style={{ display: "flex", alignItems: "flex-end", marginTop: 6, marginBottom: 2 }}>
             <div style={{ width: 32, marginRight: 8, flexShrink: 0 }}>
               <Avatar name={typing} size={28} />
             </div>
             <div style={{ background: "#0d1f3c", border: "1px solid #00ff9d33", borderRadius: "16px 16px 16px 4px", padding: "8px 14px", display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ color: "#00ff9d99", fontSize: 12 }}>{typing} is typing</span>
+              <span style={{ color: "#00ff9d99", fontSize: 12, fontFamily: "Rajdhani, sans-serif" }}>{typing} is typing</span>
               <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
                 <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#00ff9d", display: "inline-block", animation: "typingBlink 1.2s infinite 0s" }} />
                 <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#00ff9d", display: "inline-block", animation: "typingBlink 1.2s infinite 0.4s" }} />
@@ -272,6 +337,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
             </div>
           </div>
         )}
+
         <div ref={bottomRef} />
       </div>
 
@@ -279,7 +345,8 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
         <div style={s.replyBar}>
           <div style={s.replyBarContent}>
             <span style={s.replyBarLabel}>Replying to {replyTo.username}</span>
-            <span style={s.replyBarText}>{replyTo.plaintext ? replyTo.plaintext.slice(0, 60) : ""}
+            <span style={s.replyBarText}>
+              {replyTo.plaintext ? replyTo.plaintext.slice(0, 60) : ""}
               {replyTo.plaintext && replyTo.plaintext.length > 60 ? "..." : ""}
             </span>
           </div>
@@ -296,7 +363,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
           value={input}
           onChange={handleInputChange}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(e); } }}
-          placeholder={ready ? "Type a message..." : "Setting up encryption..."}
+          placeholder={ready ? "Type a message..." : status}
           disabled={!ready}
         />
         <button type="button" style={s.inputIconBtn}>
@@ -345,7 +412,6 @@ const s = {
   replyClose: { background: "none", border: "none", color: "#556677", cursor: "pointer", fontSize: 14, padding: "2px 6px" },
   inputBar: { display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "#0a1628", borderTop: "1px solid #0d2a1f" },
   inputIconBtn: { background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", padding: 4, flexShrink: 0 },
-  // inputForm removed - no longer using form wrapper
   input: { width: "100%", background: "#0d1f3c", border: "1px solid #1a2a3a", borderRadius: 24, padding: "10px 16px", color: "#fff", fontSize: 15, outline: "none", fontFamily: "Rajdhani, sans-serif" },
   sendBtn: { width: 42, height: 42, borderRadius: "50%", background: "linear-gradient(135deg, #00cc7a, #00ff9d)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 0 16px #00ff9d44", transition: "opacity 0.2s" },
 };
@@ -354,7 +420,7 @@ const css = `
   @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Rajdhani:wght@400;600;700&display=swap');
   * { box-sizing: border-box; margin: 0; padding: 0; }
   input::placeholder { color: #334455; }
-  ::-webkit-scrollbar { width: 3px; } ::-webkit-scrollbar-thumb { background: #00ff9d22; }
+  ::-webkit-scrollbar { width: 3px; }
+  ::-webkit-scrollbar-thumb { background: #00ff9d22; }
   @keyframes typingBlink { 0%,100%{opacity:0.3} 50%{opacity:1} }
-  .typingDots { animation: typingBlink 1.2s infinite; }
 `;
