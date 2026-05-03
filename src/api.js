@@ -62,7 +62,7 @@ export async function getMessages(token, roomId) {
   return r.json();
 }
 
-export async function publishKey(token, roomId, public_key) {
+export async function publishKey(roomId, token, public_key) {
   await fetch(`${BASE}/rooms/${roomId}/keys`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -70,7 +70,7 @@ export async function publishKey(token, roomId, public_key) {
   });
 }
 
-export async function getRoomKeys(token, roomId) {
+export async function getRoomKeys(roomId, token) {
   const r = await fetch(`${BASE}/rooms/${roomId}/keys`, {
     headers: { Authorization: `Bearer ${token}` }
   });

@@ -113,7 +113,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
         myKeys.current = keyPair;
         const pubB64 = await exportPublicKey(keyPair.publicKey);
         setStatus("Publishing your public key...");
-        await publishKey(token, room.id, pubB64);
+        await publishKey(room.id, token, pubB64);
         const peerCount = await refreshSharedKeys();
         if (peerCount > 0) {
           setStatus("Encrypted channel ready");
