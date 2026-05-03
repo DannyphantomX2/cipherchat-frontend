@@ -63,6 +63,14 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     setReady(true);
   }
 
+  // Poll for new peers joining the room every 5 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refreshSharedKeys();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
   async function tryDecrypt(recipients, senderId) {
     if (!recipients) return "[no content]";
     if (recipients.solo) {
@@ -119,11 +127,21 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  function handleInputChange(e) {
+    setInput(e.target.value);
+    if (e.target.value.trim()) {
+      send({ _typing: "typing" });
+    } else {
+      send({ _typing: "stop" });
+    }
+  }
+
   async function handleSend(e) {
     e.preventDefault();
     if (!input.trim() || !ready) return;
     const text = input.trim();
     setInput("");
+    send({ _typing: "stop" });
     const peers = Object.entries(sharedKeys.current);
     const payload = { reply_to_id: replyTo ? replyTo.id : null };
     setReplyTo(null);
@@ -271,7 +289,7 @@ export default function ChatRoom({ room, token, userId, username, onBack }) {
           <input
             style={{ ...s.input, opacity: ready ? 1 : 0.5 }}
             value={input}
-            onChange={e => setInput(e.target.value)}
+            onChange={handleInputChange}
             placeholder={ready ? "Type a message..." : "Setting up encryption..."}
             disabled={!ready}
           />
