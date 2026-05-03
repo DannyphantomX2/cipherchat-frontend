@@ -55,7 +55,13 @@ export async function joinRoom(token, invite_code) {
   return r.json();
 }
 
-// Called as publishKey(token, roomId, public_key)
+export async function getMessages(token, roomId) {
+  const r = await fetch(`${BASE}/rooms/${roomId}/messages`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  return r.json();
+}
+
 export async function publishKey(token, roomId, public_key) {
   await fetch(`${BASE}/rooms/${roomId}/keys`, {
     method: "POST",
@@ -64,33 +70,9 @@ export async function publishKey(token, roomId, public_key) {
   });
 }
 
-// Called as getRoomKeys(roomId, token)
-export async function getRoomKeys(roomId, token) {
+export async function getRoomKeys(token, roomId) {
   const r = await fetch(`${BASE}/rooms/${roomId}/keys`, {
     headers: { Authorization: `Bearer ${token}` }
   });
   return r.json();
-}
-
-// Called as getRoomMessages(roomId, token)
-export async function getRoomMessages(roomId, token) {
-  const r = await fetch(`${BASE}/rooms/${roomId}/messages`, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  if (!r.ok) throw new Error("Failed to fetch messages");
-  return r.json();
-}
-
-// Legacy alias — kept for any code that calls getMessages(token, roomId)
-export async function getMessages(token, roomId) {
-  return getRoomMessages(roomId, token);
-}
-
-// Called as postRoomKey(roomId, token, public_key)
-export async function postRoomKey(roomId, token, public_key) {
-  await fetch(`${BASE}/rooms/${roomId}/keys`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ public_key })
-  });
 }
